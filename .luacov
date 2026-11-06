@@ -1,0 +1,6 @@
+return {
+  include = {
+    'lua/nvim%-bundle$',
+  },
+  tick = true,
+}

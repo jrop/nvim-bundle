@@ -1,0 +1,5 @@
+.prefix/
+dist/
+*.src.rock
+*.aider*
+luacov.*.out
