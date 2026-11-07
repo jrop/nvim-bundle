@@ -35,6 +35,21 @@ Each module is evaluated at most once. Its value is cached in a block-local
 upvalue, and a require cycle raises
 `loop or previous error loading module '<name>'` instead of recursing forever.
 
+The generated file returns a registry keyed by module id. Each value is a lazy
+loader that calls the module's function, so requiring the bundle evaluates no
+module:
+
+```lua
+return {
+  ['myplugin'] = function() return __mods._myplugin('myplugin') end,
+  ['myplugin.util'] = function() return __mods._myplugin_util('myplugin.util') end,
+}
+```
+
+Indexing the registry with a literal id lets the language server follow that
+module's type. The registry itself is the only value the host's `require`
+caches.
+
 ### Field names
 
 Each module's function name derives from its module id. Dots and other
@@ -64,8 +79,8 @@ bundled copy.
 
 Module sources are emitted as Lua code, not as strings. Their annotations stay
 visible to LuaLS and EmmyLua, and because resolvable requires become direct
-calls, the language server can follow nested modules. A consumer that requires
-the bundle sees the submodule's type, not `any`.
+calls, the language server can follow nested modules. A consumer that indexes
+the registry with a literal id sees that module's type, not `any`.
 
 `pcall` and `xpcall` propagate the type as well. EmmyLua marks the value from
 `pcall` as optional because the call can fail.
@@ -73,8 +88,8 @@ the bundle sees the submodule's type, not `any`.
 ## Modules with no return value
 
 Static calls are ordinary function calls, so a module with no return value
-yields `nil` when called statically. When the bundle's entry itself returns
-`nil`, the host's `require` still follows Lua's `nil -> true` normalization.
+yields `nil` when its loader is called. The registry itself is always a table,
+so requiring the bundle never triggers Lua's `nil -> true` normalization.
 
 ## Static linking versus runtime loaders
 
@@ -83,9 +98,38 @@ runs. `nvim-bundle` resolves modules at build time instead, in the same spirit
 as a static linker or Rollup. The output has no runtime `require` searcher for
 its own submodules, and resolved calls are direct function calls.
 
-This design favors predictable output and type visibility. It also makes
-bundled submodules private: only the entry participates in the host's module
-cache. That is the intended boundary, not a missing feature.
+This design favors predictable output and type visibility. It also makes the
+bundle's modules private: the host caches the registry under the bundle's name,
+and the individual modules live only in the bundle's own cache. That is the
+intended boundary, not a missing feature.
+
+### Reaching a bundled module
+
+The bundle returns a registry of lazy loaders, so a consumer reaches the entry
+or a submodule by key:
+
+```lua
+local bundle = require 'img'
+local entry = bundle['img']()
+local placement = bundle['img.placement']()
+```
+
+The registry holds one lazy loader per bundled module, so it needs no extra
+files and installs no host searcher. Calling a loader resolves that module
+through the bundle's own map and caches it like a static call. Indexing with a
+literal id lets the language server pick the loader and follow the module's
+return type; a computed id cannot select one specific loader. The registry is
+lazy because each entry is a function: creating it evaluates no modules, and
+only the loader you call runs.
+
+A callable bundle, such as `bundle('img.placement')`, would read more naturally.
+EmmyLua can type that shape with `@overload`, but each overload has to name the
+module's return type. The bundler does not know that name for an anonymous
+module like `img.placement`, and the pinned EmmyLua does not support `typeof` to
+refer to the inferred type. The registry instead leaves each thunk visible, so
+the language server infers its return type from the loader body. That type
+information is why the indexed form was chosen over the more ergonomic call
+form.
 
 The bundler is not a tree-shaker. It includes every `.lua` file below the
 source root, minus excludes, whether or not the entry reaches it. This keeps

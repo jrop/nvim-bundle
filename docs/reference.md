@@ -54,8 +54,9 @@ layout with `module id collision`.
 
 ## Generated bundle
 
-The generated file returns the entry module's value and defines a module table
-named `__mods`.
+The generated file returns a registry table keyed by module id. Each value is a
+lazy loader that returns that module's exports. The file also defines a module
+table named `__mods`.
 
 - Each module is stored as a function whose field name derives from the module
   id. For example, `myplugin.util` becomes `__mods._myplugin_util`.
@@ -63,9 +64,25 @@ named `__mods`.
 - A call the linker cannot resolve remains a host `require` call.
 - A bundled module is evaluated at most once and caches its value.
 - A require cycle raises `loop or previous error loading module '<name>'`.
-- A bundled submodule is private to the bundle. Installing the output as
-  `lua/myplugin.lua` makes `require 'myplugin'` return the entry, but
-  `require 'myplugin.core'` does not reach the bundled copy.
+- The registry contains every bundled module, including the entry. Installing
+  the output as `lua/myplugin.lua` makes `require 'myplugin'` return the
+  registry, so the entry is reached through its loader:
+
+  ```lua
+  local bundle = require 'myplugin'
+  local myplugin = bundle['myplugin']()
+  local core = bundle['myplugin.core']()
+  ```
+
+- The registry is lazy: creating it evaluates no modules, and calling a loader
+  evaluates that module at most once. A loader returns the module's value as a
+  static call would, including `nil` for a module with no return value.
+- Indexing the registry with a literal id lets the language server use the
+  module's type. This is less ergonomic than a callable `bundle('id')`, but the
+  call form would need a written return type for every module; see
+  [Reaching a bundled module](explanation.md#reaching-a-bundled-module).
+- The bundle's modules are private to the bundle: the host only caches the
+  registry under the bundle's name.
 
 See [How static linking works](explanation.md#how-static-linking-works) for the
 reason behind these rules.

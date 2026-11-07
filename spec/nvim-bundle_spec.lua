@@ -86,6 +86,12 @@ local function compile_bundle(root, entry, opts)
   return chunk, result
 end
 
+--- Load one bundled module from a compiled registry.
+--- @param chunk function
+--- @param id string
+--- @return any
+local function module_value(chunk, id) return chunk()[id]() end
+
 describe('nvim-bundle', function()
   after_each(function()
     for _, path in ipairs(created) do
@@ -123,22 +129,24 @@ describe('nvim-bundle', function()
   end)
 
   describe('output', function()
-    it('returns the entry module value', function()
+    it('returns a registry with a loader for each bundled module', function()
       local root = fixture { ['entry.lua'] = 'return { answer = 42 }\n' }
-      local chunk = compile_bundle(root, 'entry')
-      assert.are.same({ answer = 42 }, chunk())
+      local registry = compile_bundle(root, 'entry')()
+
+      assert.is_function(registry['entry'])
+      assert.are.equal(42, registry['entry']().answer)
     end)
 
     it('resolves an entry given as a dotted module path', function()
       local root = fixture { ['pkg/mod.lua'] = "return 'pkg-mod'\n" }
       local chunk = compile_bundle(root, 'pkg.mod')
-      assert.are.equal('pkg-mod', chunk())
+      assert.are.equal('pkg-mod', module_value(chunk, 'pkg.mod'))
     end)
 
     it('resolves an entry directory via init.lua', function()
       local root = fixture { ['pkg/init.lua'] = "return 'pkg-init'\n" }
       local chunk = compile_bundle(root, 'pkg')
-      assert.are.equal('pkg-init', chunk())
+      assert.are.equal('pkg-init', module_value(chunk, 'pkg'))
     end)
 
     it('strips a UTF-8 BOM and a shebang from module sources', function()
@@ -146,7 +154,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = '\239\187\191#!/usr/bin/env -S nvim --clean -l\nreturn 7\n',
       }
       local chunk = compile_bundle(root, 'entry')
-      assert.are.equal(7, chunk())
+      assert.are.equal(7, module_value(chunk, 'entry'))
     end)
 
     it('bundles required modules instead of using the host searcher', function()
@@ -154,15 +162,15 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return require 'dep'\n",
         ['dep.lua'] = "return { from = 'fixture' }\n",
       }
-      local chunk = compile_bundle(root, 'entry')
-      assert.are.same({ from = 'fixture' }, chunk())
+      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      assert.are.equal('fixture', entry.from)
     end)
 
     it('falls back to the host require for unknown modules', function()
       package.loaded['bundle_host_probe'] = 'from-host'
       local ok, value = pcall(function()
         local root = fixture { ['entry.lua'] = "return require 'bundle_host_probe'\n" }
-        return compile_bundle(root, 'entry')()
+        return module_value(compile_bundle(root, 'entry'), 'entry')
       end)
       package.loaded['bundle_host_probe'] = nil
       assert.is_true(ok, tostring(value))
@@ -175,8 +183,9 @@ describe('nvim-bundle', function()
         ['shadow.lua'] = "return 'flat'\n",
         ['shadow/init.lua'] = "return 'init'\n",
       }
-      local chunk = compile_bundle(root, 'entry')
-      assert.are.same({ flat = 'flat', init = 'init' }, chunk())
+      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      assert.are.equal('flat', entry.flat)
+      assert.are.equal('init', entry.init)
     end)
 
     it('reports a require cycle instead of recursing forever', function()
@@ -185,7 +194,7 @@ describe('nvim-bundle', function()
         ['loop.lua'] = "return require 'loop'\n",
       }
       local chunk = compile_bundle(root, 'entry')
-      local ok, err = pcall(chunk)
+      local ok, err = pcall(function() return module_value(chunk, 'entry') end)
       assert.is_false(ok)
       assert.is_truthy(
         tostring(err):find("loop or previous error loading module 'loop'", 1, true),
@@ -200,7 +209,9 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "local ok, dep = pcall(require, 'dep')\nreturn { ok = ok, dep = dep }\n",
         ['dep.lua'] = "return 'dep'\n",
       }
-      assert.are.same({ ok = true, dep = 'dep' }, compile_bundle(root, 'entry')())
+      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      assert.is_true(entry.ok)
+      assert.are.equal('dep', entry.dep)
     end)
 
     it('resolves xpcall(require, handler, ...) to a bundled module', function()
@@ -209,7 +220,9 @@ describe('nvim-bundle', function()
           .. 'return { ok = ok, dep = dep }\n',
         ['dep.lua'] = "return 'dep'\n",
       }
-      assert.are.same({ ok = true, dep = 'dep' }, compile_bundle(root, 'entry')())
+      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      assert.is_true(entry.ok)
+      assert.are.equal('dep', entry.dep)
     end)
 
     it('leaves a shadowed require dynamic', function()
@@ -218,7 +231,7 @@ describe('nvim-bundle', function()
           .. "return require 'dep'\n",
         ['dep.lua'] = "return 'bundled'\n",
       }
-      assert.are.equal('local-dep', compile_bundle(root, 'entry')())
+      assert.are.equal('local-dep', module_value(compile_bundle(root, 'entry'), 'entry'))
     end)
 
     it('leaves a multi-line require dynamic', function()
@@ -227,7 +240,9 @@ describe('nvim-bundle', function()
         ['dep.lua'] = "return 'bundled'\n",
       }
       package.loaded.dep = 'host-dep'
-      local ok, value = pcall(function() return compile_bundle(root, 'entry')() end)
+      local ok, value = pcall(
+        function() return module_value(compile_bundle(root, 'entry'), 'entry') end
+      )
       package.loaded.dep = nil
       assert.is_true(ok, tostring(value))
       assert.are.equal('host-dep', value)
@@ -238,7 +253,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return { escaped = require 'pkg\\46util', long = require [[pkg.util]] }\n",
         ['pkg/util.lua'] = "return { name = 'util' }\n",
       }
-      local value = compile_bundle(root, 'entry')()
+      local value = module_value(compile_bundle(root, 'entry'), 'entry')
       assert.are.equal('util', value.escaped.name)
       assert.are.equal(value.escaped, value.long)
     end)
@@ -248,7 +263,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return require 'dep'\n",
         ['dep.lua'] = 'return ...\n',
       }
-      assert.are.equal('dep', compile_bundle(root, 'entry')())
+      assert.are.equal('dep', module_value(compile_bundle(root, 'entry'), 'entry'))
     end)
 
     it('returns nil for a module with no return value', function()
@@ -256,7 +271,43 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return require 'side_effect'\n",
         ['side_effect.lua'] = 'local value = 1\n',
       }
-      assert.is_nil(compile_bundle(root, 'entry')())
+      assert.is_nil(module_value(compile_bundle(root, 'entry'), 'entry'))
+    end)
+  end)
+
+  describe('registry', function()
+    it('loads each bundled module once and returns its value', function()
+      local root = fixture {
+        ['entry.lua'] = "local dep = require 'dep'\nreturn { dep = dep }\n",
+        ['dep.lua'] = "return { name = 'dep' }\n",
+      }
+      local registry = compile_bundle(root, 'entry')()
+
+      assert.are.equal(registry['entry']().dep, registry['dep']())
+      assert.are.equal('dep', registry['dep']().name)
+    end)
+
+    it('contains every bundled module id', function()
+      local root = fixture {
+        ['entry.lua'] = "return { dep = require 'dep' }\n",
+        ['dep.lua'] = "return 'dep'\n",
+      }
+      local registry = compile_bundle(root, 'entry')()
+
+      assert.is_function(registry['entry'])
+      assert.is_function(registry['dep'])
+      assert.is_nil(registry['bundle_entry_host_probe'])
+    end)
+
+    it('returns nil for a bundled module with no return value', function()
+      local root = fixture {
+        ['entry.lua'] = "return { side = require 'side_effect' }\n",
+        ['side_effect.lua'] = 'local value = 1\n',
+      }
+      local registry = compile_bundle(root, 'entry')()
+
+      assert.is_nil(registry['entry']().side)
+      assert.is_nil(registry['side_effect']())
     end)
   end)
 
@@ -287,7 +338,9 @@ describe('nvim-bundle', function()
 
       assert.is_truthy(content:find('__mods._a_b = function', 1, true))
       assert.is_truthy(content:find('__mods._a_b_2 = function', 1, true))
-      assert.are.same({ dotted = 'dotted', underscored = 'underscored' }, chunk())
+      local entry = module_value(chunk, 'entry')
+      assert.are.equal('dotted', entry.dotted)
+      assert.are.equal('underscored', entry.underscored)
     end)
 
     it('escapes a name that would start with a digit', function()
@@ -320,11 +373,12 @@ describe('nvim-bundle', function()
       local ok, value = pcall(function()
         local chunk, result = compile_bundle(root, 'entry', { exclude = { 'dep.lua' } })
         assert.are.equal(2, result.modules)
-        return chunk()
+        return module_value(chunk, 'entry')
       end)
       package.loaded.dep = nil
       assert.is_true(ok, tostring(value))
-      assert.are.same({ dep = 'host-dep', skip = 'bundled-skip' }, value)
+      assert.are.equal('host-dep', value.dep)
+      assert.are.equal('bundled-skip', value.skip)
     end)
 
     it('rejects an entry that is excluded', function()
@@ -400,7 +454,8 @@ describe('nvim-bundle', function()
     end
 
     local consumer = table.concat({
-      "local lib = require 'bundled_lib'",
+      "local bundle = require 'bundled_lib'",
+      "local lib = bundle['entry']()",
       '---@type string',
       'local s = lib.util.answer',
       'print(s)',
@@ -438,6 +493,29 @@ describe('nvim-bundle', function()
         output:find('assign-type-mismatch', 1, true) or output:find('need-check-nil', 1, true),
         output
       )
+    end)
+
+    it('preserves the type of a module through the registry', function()
+      if not can_check_types() then return end
+
+      local root = fixture {
+        ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
+        ['util.lua'] = util,
+      }
+      local _, result = compile_bundle(root, 'entry')
+      local output = check_types(
+        slurp(result.out),
+        table.concat({
+          "local bundle = require 'bundled_lib'",
+          '---@type string',
+          "local s = bundle['util']().answer",
+          'print(s)',
+          '',
+        }, '\n')
+      )
+
+      assert.is_truthy(output:find('consumer.lua', 1, true), output)
+      assert.is_truthy(output:find('assign-type-mismatch', 1, true), output)
     end)
   end)
 end)

@@ -421,8 +421,15 @@ local function generate(root, files, ids, entry_id)
     emit 'end'
   end
 
+  -- The returned table maps module ids to lazy loaders. Each loader calls the
+  -- bundled module function, so creating the table evaluates nothing.
   emit ''
-  emit(('return __mods.%s(%q)'):format(fields_by_id[entry_id], entry_id))
+  emit 'return {'
+  for _, file in ipairs(files) do
+    local id = ids[file.path]
+    emit(('  [%q] = function() return __mods.%s(%q) end,'):format(id, fields_by_id[id], id))
+  end
+  emit '}'
   return table.concat(out, '\n')
 end
 

@@ -5,7 +5,8 @@ Statically link a Neovim plugin's Lua modules into one file.
 `nvim-bundle` resolves `require 'literal'` calls at build time, so the generated
 file calls bundled module functions directly. Module sources stay Lua code, so
 LuaLS and EmmyLua annotations remain visible. Calls the linker cannot resolve
-stay ordinary host `require` calls.
+stay ordinary host `require` calls. The generated file exports a registry of
+lazy module loaders keyed by module id.
 
 ## Requirements
 
@@ -71,7 +72,7 @@ generated file. We will use the `nvim-bundle` command from `PATH`.
 
    ```sh
    nvim --clean --headless \
-     +'lua local demo = dofile("dist/demo.lua"); print(demo.greet("world"))' \
+     +'lua local bundle = dofile("dist/demo.lua"); print(bundle["demo"]().greet("world"))' \
      +'qa!'
    ```
 
@@ -86,6 +87,18 @@ generated file. We will use the `nvim-bundle` command from `PATH`.
    function per module. For why that shape preserves types and what stays
    dynamic, see
    [How static linking works](docs/explanation.md#how-static-linking-works).
+
+   The generated file returns a registry keyed by module id. Each value is a
+   lazy loader, so a literal key preserves that module's type:
+
+   ```lua
+   local bundle = require 'demo'
+   local demo = bundle['demo']()
+   local util = bundle['demo.util']()
+   ```
+
+   Calling a loader evaluates that module at most once, like a static
+   `require`.
 
 We have built a bundle from two modules and loaded it without installing the
 plugin.
