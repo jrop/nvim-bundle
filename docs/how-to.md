@@ -70,8 +70,11 @@ The script is executable, so the direct form also works:
 
 ### As a vendored file
 
-Copy `lua/nvim-bundle.lua` into the project that needs it, for example at
-`scripts/nvim-bundle.lua`, and run it with `nvim --clean -l`. Keep the file
+Copy `lua/nvim-bundle.lua` and the `lua/nvim-bundle/` directory into the
+project that needs them, preserving their relative layout. The directory holds
+the vendored argument parser that the entry requires. Run the entry with
+`nvim --clean -l`, or build a self-contained executable as described in
+[Build an executable bundle](#build-an-executable-bundle). Keep the files
 outside the source root, because every `.lua` file below the source root is
 bundled.
 
@@ -103,6 +106,24 @@ To use a different entry, source root, or output path:
 nvim-bundle entry --root src --out build/entry.lua
 ```
 
+## Build an executable bundle
+
+Pass `--bin` when the bundle is a program rather than a library. An example is
+a command-line tool whose entry exports `main`:
+
+```sh
+nvim-bundle mycli --bin --out dist/mycli
+./dist/mycli --help
+```
+
+The output starts with a shebang and a modeline, carries the executable bit,
+and returns the entry module's value. The entry module must detect when it is
+the main script, typically by comparing `debug.getinfo(1, 'S').source` with
+`arg[0]`; the generated file does not add a second guard. Requiring the same
+file returns the entry's exports without running its main path. A `--bin`
+bundle does not return the module registry, so submodules are reachable only
+through the entry's static requires.
+
 ## Exclude tests and vendor files
 
 Repeat `--exclude` for each path pattern you want to skip:
@@ -119,24 +140,27 @@ to the source root, so `lua/vendor/**` and `vendor/**` select the same files.
 ## Use the bundler from Lua
 
 When the repository's `lua/` directory is on `package.path`, require the module
-and call `run`:
+and call `build`:
 
 ```lua
 local NvimBundle = require 'nvim-bundle'
 
-local result = NvimBundle.run {
-  'myplugin',
-  '--root',
-  'lua',
-  '--out',
-  'dist/myplugin.lua',
+local result = NvimBundle.build {
+  entry = 'myplugin',
+  root = 'lua',
+  out = 'dist/myplugin.lua',
 }
 
--- result = { out = 'dist/myplugin.lua', entry = 'myplugin', modules = 12 }
+-- result = {
+--   out = 'dist/myplugin.lua',
+--   entry = 'myplugin',
+--   modules = 12,
+-- }
 ```
 
-`run` raises on failure. `main` is the CLI wrapper: it prints the summary,
-writes errors to stderr, and exits with status 1 on failure. See the
+`build` raises on failure. The process boundary around it is private; the
+script and `--bin` bundles are the supported ways to get the printed summary,
+stderr errors, and exit status 1 on failure. See the
 [Programmatic API](reference.md#programmatic-api).
 
 ## Develop nvim-bundle
@@ -171,7 +195,8 @@ busted spec/nvim-bundle_spec.lua
 ## Publish a release
 
 Publishing requires a clean working tree, a `v*` tag at `HEAD` that has already
-been pushed, and an authenticated `gh` CLI. Run the release task:
+been pushed, and an authenticated `gh` CLI. Create the tag and run the release
+task:
 
 ```sh
 git tag v0.1.0
@@ -179,10 +204,14 @@ git push origin v0.1.0
 mise run release
 ```
 
-The task runs `mise run ci`, copies `lua/nvim-bundle.lua` to the extensionless
-`nvim-bundle` asset, writes `nvim-bundle.sha256`, and creates the GitHub
-release. The task refuses to publish when `HEAD` is not tagged, the tree is
-dirty, or the remote tag does not exist.
+The task runs `mise run ci`, copies `lua/` to a temporary directory, stamps the
+tag into that copy, and bundles it with `--bin`. The self-bundle inlines the
+vendored argument parser, so the extensionless `nvim-bundle` asset stays a
+single file while also being executable, and its `--version` names the release
+even though a checkout reports the `VERSION` constant in `lua/nvim-bundle.lua`.
+The task writes `nvim-bundle.sha256` and creates the GitHub release. It refuses
+to publish when `HEAD` is not tagged, the tree is dirty, or the remote tag does
+not exist.
 
 This publishes a public release, so only a maintainer should run it.
 

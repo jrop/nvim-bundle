@@ -103,13 +103,18 @@ generated file. We will use the `nvim-bundle` command from `PATH`.
 We have built a bundle from two modules and loaded it without installing the
 plugin.
 
+For a command-line tool, pass `--bin` to produce an executable instead of a
+library bundle. It adds a shebang, sets the executable bit, and returns the
+entry module. See
+[Build an executable bundle](docs/how-to.md#build-an-executable-bundle).
+
 ## Documentation
 
-| I want to...                                             | Read                              |
-| -------------------------------------------------------- | --------------------------------- |
-| Bundle a real plugin, exclude files, or use the Lua API  | [How-to guides](docs/how-to.md)   |
-| Look up commands, options, module ids, or errors         | [Reference](docs/reference.md)    |
-| Understand static linking and type propagation           | [Explanation](docs/explanation.md) |
+| I want to...                                                        | Read                               |
+| ------------------------------------------------------------------- | ---------------------------------- |
+| Bundle a plugin, build an executable, or use the Lua API            | [How-to guides](docs/how-to.md)    |
+| Look up commands, options, module ids, or errors                    | [Reference](docs/reference.md)     |
+| Understand static linking, executable bundles, and type propagation | [Explanation](docs/explanation.md) |
 
 ## License
 

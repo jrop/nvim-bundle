@@ -6,7 +6,10 @@
 --- Black-box tests for the bundler. Every case writes a small source tree to a
 --- temporary directory, runs the CLI, and then executes or inspects the output.
 
-local NvimBundle = require 'nvim-bundle'
+--- @class CliResult
+--- @field out string
+--- @field entry string
+--- @field modules number
 
 --- Temporary paths created by the current test, removed in after_each.
 local created = {}
@@ -43,36 +46,101 @@ local function slurp(path)
   return content
 end
 
+--- Run the CLI in a child Neovim, so every test exercises the same entry point
+--- a user does.
 --- @param argv string[]
---- @return { out: string, entry: string, modules: integer }
+--- @return vim.SystemCompleted
+local function cli(argv)
+  local cmd = { 'nvim', '--clean' }
+  -- Under `busted --coverage`, instrument the child so its CLI lines count.
+  if package.loaded['luacov.runner'] then
+    cmd[#cmd + 1] = '--cmd'
+    cmd[#cmd + 1] = 'lua require("luacov")'
+  end
+  cmd[#cmd + 1] = '-l'
+  cmd[#cmd + 1] = vim.fn.fnamemodify('lua/nvim-bundle.lua', ':p')
+  for _, arg in ipairs(argv) do
+    cmd[#cmd + 1] = arg
+  end
+  return vim.system(cmd, { text = true }):wait()
+end
+
+--- @param stdout string
+--- @return CliResult
+local function parse_summary(stdout)
+  local modules, out, entry = stdout:match '^bundled (%d+) modules into (.-)%s+%(entry (.-)%)%s*$'
+  assert.is_truthy(modules, ('unexpected CLI output: %q'):format(stdout))
+  --- @cast modules string
+  --- @cast out string
+  --- @cast entry string
+  return {
+    modules = assert(tonumber(modules)),
+    out = out,
+    entry = entry,
+  }
+end
+
+--- @param argv string[]
+--- @return CliResult
 local function run_ok(argv)
-  local ok, result = pcall(NvimBundle.run, argv)
-  assert.is_true(ok, tostring(result))
-  --- @cast result { out: string, entry: string, modules: integer }
-  return result
+  local proc = cli(argv)
+  assert.are.equal(0, proc.code, proc.stderr)
+  return parse_summary(proc.stdout or '')
+end
+
+--- @param argv string[]
+--- @return string
+local function run_help(argv)
+  local proc = cli(argv)
+  assert.are.equal(0, proc.code, proc.stderr)
+  local stdout = proc.stdout or ''
+  assert.is_truthy(stdout:find('Usage:', 1, true), stdout)
+  return stdout
 end
 
 --- @param argv string[]
 --- @param pattern string
 local function run_fail(argv, pattern)
-  local ok, err = pcall(NvimBundle.run, argv)
-  assert.is_false(ok, 'expected the bundler to fail')
+  local proc = cli(argv)
+  assert.are.equal(1, proc.code, proc.stdout)
+  local stderr = proc.stderr or ''
   assert.is_truthy(
-    tostring(err):find(pattern, 1, true),
-    ('expected %q in error %q'):format(pattern, tostring(err))
+    stderr:find(pattern, 1, true),
+    ('expected %q in error %q'):format(pattern, stderr)
   )
+end
+
+--- Load the module under test directly, so its chunk name is absolute and
+--- matches the CLI child process in coverage reports.
+--- @return table
+local function load_module()
+  local path = vim.fn.fnamemodify('lua/nvim-bundle.lua', ':p')
+  local chunk, err = loadfile(path)
+  assert.is_truthy(chunk, err)
+  --- @cast chunk function
+  return chunk()
+end
+
+--- @param path string
+--- @return function
+local function load_bundle(path)
+  local chunk, err = loadstring(slurp(path), '@' .. path)
+  assert.is_truthy(chunk, err)
+  --- @cast chunk function
+  return chunk
 end
 
 --- Bundle `root`'s `entry` and compile the generated file. The caller decides
 --- whether executing the chunk should succeed.
 --- @param root string
 --- @param entry string
---- @param opts { exclude?: string[] }?
---- @return function chunk, { out: string, entry: string, modules: integer } result
+--- @param opts { bin?: boolean, exclude?: string[] }?
+--- @return function chunk, CliResult result
 local function compile_bundle(root, entry, opts)
   opts = opts or {}
   local out = root .. '-out/' .. entry .. '.lua'
   local argv = { '--root', root, '--out', out }
+  if opts.bin then argv[#argv + 1] = '--bin' end
   for _, glob in ipairs(opts.exclude or {}) do
     argv[#argv + 1] = '--exclude'
     argv[#argv + 1] = glob
@@ -80,10 +148,7 @@ local function compile_bundle(root, entry, opts)
   argv[#argv + 1] = entry
 
   local result = run_ok(argv)
-  local chunk, err = loadstring(slurp(result.out), '@' .. result.out)
-  assert.is_truthy(chunk, err)
-  --- @cast chunk function
-  return chunk, result
+  return load_bundle(result.out), result
 end
 
 --- Load one bundled module from a compiled registry.
@@ -100,26 +165,73 @@ describe('nvim-bundle', function()
     created = {}
   end)
 
+  describe('public API', function()
+    it('exposes build and not run or main', function()
+      local NvimBundle = load_module()
+      local keys = vim.tbl_keys(NvimBundle)
+      table.sort(keys)
+
+      assert.are.same({ 'build' }, keys)
+      assert.is_function(NvimBundle.build)
+      assert.is_nil(NvimBundle.run)
+      assert.is_nil(NvimBundle.main)
+    end)
+
+    it('builds a fixture through build', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      local out = root .. '-out/entry.lua'
+      local result = load_module().build { root = root, out = out, entry = 'entry' }
+
+      assert.are.equal(out, result.out)
+      assert.are.equal(1, result.modules)
+      assert.is_truthy(vim.uv.fs_stat(out))
+    end)
+  end)
+
   describe('arguments', function()
-    it(
-      'rejects a missing entry',
-      function() run_fail({ '--root', 'lua' }, 'missing entry module') end
-    )
+    it('rejects a missing entry', function()
+      run_fail({}, 'missing entry module (for example: myplugin)')
+      run_fail({ '--root', 'lua' }, 'missing entry module (for example: myplugin)')
+    end)
 
     it(
       'rejects an unknown option',
-      function() run_fail({ '--nope', 'entry' }, 'unknown option --nope') end
+      function() run_fail({ '--nope', 'entry' }, 'unknown or unexpected option: --nope') end
     )
+
+    it('accepts an inline long-option value', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      local out = root .. '-out/entry.lua'
+      local result = run_ok { '--root=' .. root, '--out=' .. out, 'entry' }
+
+      assert.are.equal(out, result.out)
+    end)
 
     it(
       'rejects an option with no value',
-      function() run_fail({ '--root' }, '--root needs a value') end
+      function() run_fail({ '--root' }, 'option requires argument: --root') end
+    )
+
+    it(
+      'rejects extra positional arguments',
+      function() run_fail({ 'entry', 'extra' }, 'unexpected argument extra') end
     )
 
     it('returns help without bundling', function()
-      local ok, result = pcall(NvimBundle.run, { '--help' })
-      assert.is_true(ok, tostring(result))
-      assert.is_true(result.help)
+      for _, flag in ipairs { '--help', '-h' } do
+        local help = run_help { flag }
+        assert.is_truthy(help:find('Usage: nvim-bundle <entry>', 1, true), help)
+        assert.is_truthy(help:find('--root', 1, true), help)
+      end
+    end)
+
+    it('prints both versions', function()
+      for _, flag in ipairs { '--version', '-V' } do
+        local proc = cli { flag }
+        assert.are.equal(0, proc.code, proc.stderr)
+        local stdout = proc.stdout or ''
+        assert.is_truthy(stdout:match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+', stdout)
+      end
     end)
 
     it('reports an entry file that is not on disk', function()
@@ -200,6 +312,85 @@ describe('nvim-bundle', function()
         tostring(err):find("loop or previous error loading module 'loop'", 1, true),
         tostring(err)
       )
+    end)
+  end)
+
+  describe('bin bundles', function()
+    it('starts with a shebang and modeline', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      local _, result = compile_bundle(root, 'entry', { bin = true })
+      local first, second = slurp(result.out):match '^([^\n]*)\n([^\n]*)\n'
+
+      assert.are.equal('#!/usr/bin/env -S nvim --clean -l', first)
+      assert.are.equal('-- vim: set ft=lua:', second)
+    end)
+
+    it('runs the entry module when executed as the main script', function()
+      local root = fixture {
+        ['entry.lua'] = table.concat({
+          'local M = {}',
+          'function M.main() io.stdout:write("entry-main\\n") end',
+          'local info = debug.getinfo(1, "S")',
+          'local argv0 = arg and arg[0]',
+          'if info and argv0 and info.source:sub(1, 1) == "@" then',
+          '  local this = vim.fs.normalize(vim.fn.fnamemodify(info.source:sub(2), ":p"))',
+          '  local invoked = vim.fs.normalize(vim.fn.fnamemodify(argv0, ":p"))',
+          '  if this == invoked then M.main() end',
+          'end',
+          'return M',
+          '',
+        }, '\n'),
+      }
+      local _, result = compile_bundle(root, 'entry', { bin = true })
+      local proc = vim.system({ 'nvim', '--clean', '-l', result.out }, { text = true }):wait()
+
+      assert.are.equal(0, proc.code, proc.stderr)
+      assert.are.equal('entry-main\n', proc.stdout)
+    end)
+
+    it('returns the entry module when loaded as a library', function()
+      local root = fixture {
+        ['entry.lua'] = table.concat({
+          'local M = { marker = "entry" }',
+          'function M.main() error("main must not run") end',
+          'local info = debug.getinfo(1, "S")',
+          'local argv0 = arg and arg[0]',
+          'if info and argv0 and info.source:sub(1, 1) == "@" then',
+          '  local this = vim.fs.normalize(vim.fn.fnamemodify(info.source:sub(2), ":p"))',
+          '  local invoked = vim.fs.normalize(vim.fn.fnamemodify(argv0, ":p"))',
+          '  if this == invoked then M.main() end',
+          'end',
+          'return M',
+          '',
+        }, '\n'),
+      }
+      local _, result = compile_bundle(root, 'entry', { bin = true })
+      local entry = load_bundle(result.out)()
+
+      assert.are.equal('entry', entry.marker)
+      assert.is_function(entry.main)
+    end)
+
+    it('makes the output executable', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      local _, result = compile_bundle(root, 'entry', { bin = true })
+      local stat = assert(vim.uv.fs_stat(result.out))
+
+      assert.is_truthy(bit.band(stat.mode, 64) ~= 0)
+    end)
+
+    it('bundles nvim-bundle itself into a working executable', function()
+      local out = fixture {} .. '-out/nvim-bundle'
+      run_ok { '--root', 'lua', '--out', out, '--bin', 'nvim-bundle' }
+
+      local proc = vim.system({ 'nvim', '--clean', '-l', out, '--version' }, { text = true }):wait()
+      assert.are.equal(0, proc.code, proc.stderr)
+      assert.is_truthy(
+        (proc.stdout or ''):match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+'
+      )
+
+      local entry = load_bundle(out)()
+      assert.is_function(entry.build)
     end)
   end)
 
@@ -383,10 +574,15 @@ describe('nvim-bundle', function()
 
     it('rejects an entry that is excluded', function()
       local root = fixture { ['entry.lua'] = 'return 1\n' }
-      run_fail(
-        { '--root', root, '--out', root .. '-out/entry.lua', '--exclude', 'entry.lua', 'entry' },
-        'entry is excluded or missing from the bundle'
-      )
+      run_fail({
+        '--root',
+        root,
+        '--out',
+        root .. '-out/entry.lua',
+        '--exclude',
+        'entry.lua',
+        'entry',
+      }, 'entry is excluded or missing from the bundle')
     end)
 
     it('rejects an invalid exclude glob', function()

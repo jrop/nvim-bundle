@@ -7,7 +7,47 @@
 -- `require`, an unparsable module, or a module outside the bundle) remain
 -- ordinary host `require` calls.
 
+local function path_exists(path) return vim.uv.fs_stat(path) ~= nil end
+
+--- @return boolean
+local function is_main()
+  local info = debug.getinfo(1, 'S')
+  local argv0 = arg and arg[0]
+  if not info or not argv0 or info.source:sub(1, 1) ~= '@' then return false end
+  local this = vim.fs.normalize(vim.fn.fnamemodify(info.source:sub(2), ':p'))
+  return this == vim.fs.normalize(vim.fn.fnamemodify(argv0, ':p'))
+end
+
+-- A checkout runs this file directly, so `lua/` is not on `package.path`; the
+-- published bundle inlines the vendored module and needs no bootstrap. The
+-- vendor-file check keeps a required bundle from touching the host's path.
+local running_as_main = is_main()
+if running_as_main and arg and arg[0] then
+  local script_dir = vim.fs.dirname(vim.fn.fnamemodify(arg[0], ':p'))
+  if path_exists(script_dir .. '/nvim-bundle/_vendor/args.lua') then
+    package.path = script_dir .. '/?.lua;' .. package.path
+  end
+end
+
+local args = require 'nvim-bundle._vendor.args'
+
 local M = {}
+
+-- The version a checkout reports. The release task stamps the tag into the
+-- published asset, so the asset always names the release it came from.
+local VERSION = '0.1.0'
+
+--- @class NvimBundle.BuildOptions
+--- @field entry string
+--- @field root? string
+--- @field out? string
+--- @field exclude? string[]
+--- @field bin? boolean
+
+--- @class NvimBundle.BuildResult
+--- @field out string
+--- @field entry string
+--- @field modules integer
 
 local USAGE = [[
 Usage: nvim-bundle <entry> [options]
@@ -16,7 +56,9 @@ Options:
   --root <dir>       Source root to scan (default: lua)
   --out <file>       Output bundle (default: dist/<entry>.lua)
   --exclude <glob>   Skip paths matching <glob> (repeatable)
+  --bin              Make an executable that returns the entry module
   -h, --help         Show this help
+  -V, --version      Print the nvim-bundle and Neovim versions
 
 Examples:
   nvim-bundle myplugin
@@ -27,41 +69,38 @@ Examples:
 --- @return never
 local function die(msg) error('nvim-bundle: ' .. msg, 0) end
 
-local function path_exists(path) return vim.uv.fs_stat(path) ~= nil end
+--- @type table<string, any>
+local ARGS_SPEC = {
+  ['--root'] = 'string',
+  ['--out'] = 'string',
+  ['--exclude'] = { 'string' },
+  ['--bin'] = 'boolean',
+  ['--help'] = 'boolean',
+  ['-h'] = '--help',
+  ['--version'] = 'boolean',
+  ['-V'] = '--version',
+}
 
-local function parse_args(argv)
-  local opts = { root = 'lua', exclude = {} }
-  local entry
-  local i = 1
-  while i <= #argv do
-    local a = argv[i]
-    if a == '--root' then
-      i = i + 1
-      opts.root = argv[i] or die '--root needs a value'
-    elseif a == '--out' then
-      i = i + 1
-      opts.out = argv[i] or die '--out needs a value'
-    elseif a == '--exclude' then
-      i = i + 1
-      opts.exclude[#opts.exclude + 1] = argv[i] or die '--exclude needs a value'
-    elseif a == '--help' or a == '-h' then
-      return { help = true }
-    elseif a:sub(1, 1) == '-' then
-      die('unknown option ' .. a)
-    elseif entry then
-      die('unexpected argument ' .. a)
-    else
-      entry = a
-    end
-    i = i + 1
-  end
-  if not entry then die 'missing entry module (for example: morph)' end
-  opts.entry = entry
-  opts.root = opts.root:gsub('/+$', '')
-  opts.out = opts.out or ('dist/' .. entry .. '.lua')
+--- @param parsed table
+--- @return NvimBundle.BuildOptions
+local function parse_options(parsed)
+  local positional = parsed._
+  if #positional > 1 then die('unexpected argument ' .. positional[2]) end
+  if not positional[1] then die 'missing entry module (for example: myplugin)' end
+
+  local opts = {
+    root = parsed['--root'],
+    out = parsed['--out'],
+    entry = positional[1],
+    exclude = parsed['--exclude'],
+    bin = parsed['--bin'],
+  }
+  --- @cast opts NvimBundle.BuildOptions
   return opts
 end
 
+--- @param root string
+--- @param entry string
 local function resolve_entry(root, entry)
   local rel = entry:gsub('%.', '/')
   local candidates = {
@@ -149,7 +188,7 @@ local queries
 local function get_queries()
   if queries then return queries end
 
-  local built = {
+  queries = {
     require_calls = vim.treesitter.query.parse(
       'lua',
       [[
@@ -177,9 +216,7 @@ local function get_queries()
       ]]
     ),
   }
-
-  queries = built
-  return built
+  return queries
 end
 
 --- Neovim 0.12 returns each capture as a list of nodes, while 0.10 returns
@@ -376,7 +413,13 @@ local function field_name(id, taken)
   return name
 end
 
-local function generate(root, files, ids, entry_id)
+--- @param root string
+--- @param files { rel: string, path: string }[]
+--- @param ids table<string, string>
+--- @param entry_id string
+--- @param bin boolean?
+--- @return string
+local function generate(root, files, ids, entry_id, bin)
   local fields_by_id = {}
   local taken = {}
   for _, file in ipairs(files) do
@@ -386,6 +429,10 @@ local function generate(root, files, ids, entry_id)
 
   local out = {}
   local function emit(line) out[#out + 1] = line end
+  if bin then
+    emit '#!/usr/bin/env -S nvim --clean -l'
+    emit '-- vim: set ft=lua:'
+  end
   emit '-- Generated by nvim-bundle; do not edit.'
   emit('-- entry: ' .. entry_id)
   emit('-- source root: ' .. root)
@@ -421,6 +468,15 @@ local function generate(root, files, ids, entry_id)
     emit 'end'
   end
 
+  -- A bin bundle returns the entry module's value, so requiring it behaves like
+  -- requiring the entry source and executing it lets the entry's own main guard
+  -- decide whether to run.
+  if bin then
+    emit ''
+    emit(('return __mods.%s(%q)'):format(fields_by_id[entry_id], entry_id))
+    return table.concat(out, '\n')
+  end
+
   -- The returned table maps module ids to lazy loaders. Each loader calls the
   -- bundled module function, so creating the table evaluates nothing.
   emit ''
@@ -442,18 +498,21 @@ local function write_output(path, content)
   f:close()
 end
 
-function M.run(argv)
-  local opts = parse_args(argv)
-  if opts.help then return { help = true } end
+--- @param opts NvimBundle.BuildOptions
+--- @return NvimBundle.BuildResult
+function M.build(opts)
+  local root = (opts.root or 'lua'):gsub('/+$', '')
+  local out = opts.out or ('dist/' .. opts.entry .. '.lua')
+  local exclude = opts.exclude or {}
 
-  local entry_path = resolve_entry(opts.root, opts.entry)
-  local patterns = compile_excludes(opts.exclude)
-  local files = list_lua_files(opts.root, patterns)
+  local entry_path = resolve_entry(root, opts.entry)
+  local patterns = compile_excludes(exclude)
+  local files = list_lua_files(root, patterns)
 
   local ids = {}
   local by_id = {}
   for _, file in ipairs(files) do
-    local id = module_id(opts.root, file.rel)
+    local id = module_id(root, file.rel)
     local other = by_id[id]
     if other then
       die(('module id collision: %s and %s both map to %s'):format(other, file.path, id))
@@ -465,10 +524,10 @@ function M.run(argv)
   local entry_id = ids[entry_path]
   if not entry_id then die('entry is excluded or missing from the bundle: ' .. entry_path) end
 
-  local out_abs = vim.fs.normalize(vim.fn.fnamemodify(opts.out, ':p'))
-  local root_abs = vim.fs.normalize(vim.fn.fnamemodify(opts.root, ':p'))
+  local out_abs = vim.fs.normalize(vim.fn.fnamemodify(out, ':p'))
+  local root_abs = vim.fs.normalize(vim.fn.fnamemodify(root, ':p'))
   if out_abs:sub(1, #root_abs + 1) == root_abs .. '/' then
-    die('--out must be outside the source root (' .. opts.root .. ')')
+    die('--out must be outside the source root (' .. root .. ')')
   end
 
   -- 0.10 returns no value from language.add on success, while newer versions
@@ -480,36 +539,51 @@ function M.run(argv)
   end)
   if not has_parser then die 'Neovim Lua parser is required for static require resolution' end
 
-  local content = generate(opts.root, files, ids, entry_id)
-  local chunk, err = loadstring(content, '@' .. opts.out)
+  local content = generate(root, files, ids, entry_id, opts.bin)
+  local chunk, err = loadstring(content, '@' .. out)
   if not chunk then die('generated bundle has a syntax error: ' .. err) end
-  write_output(opts.out, content)
-  return { out = opts.out, entry = entry_id, modules = #files }
+  write_output(out, content)
+  if opts.bin then
+    local ok, chmod_err = vim.uv.fs_chmod(out, 493)
+    if not ok then die(('cannot make %s executable: %s'):format(out, tostring(chmod_err))) end
+  end
+  return { out = out, entry = entry_id, modules = #files }
 end
 
-function M.main(argv)
-  local ok, result = pcall(M.run, argv)
-  if not ok then
-    io.stderr:write(tostring(result) .. '\n')
-    os.exit(1)
+local function exit_error(err)
+  io.stderr:write(tostring(err) .. '\n')
+  os.exit(1)
+end
+
+-- Process boundary: parse argv, call `build`, and turn the result into stdout,
+-- stderr, and an exit status. `build` is the only public function.
+local function main(argv)
+  local parse_ok, parsed = pcall(args.parse, ARGS_SPEC, argv)
+  if not parse_ok then exit_error('nvim-bundle: ' .. tostring(parsed)) end
+  --- @cast parsed table
+
+  if parsed['--version'] then
+    -- The type stubs model `vim.version` as a table, but Neovim exposes it as
+    -- a callable table.
+    --- @diagnostic disable-next-line: call-non-callable
+    local v = vim.version()
+    local neovim = ('%d.%d.%d'):format(v.major, v.minor, v.patch)
+    if v.prerelease then neovim = neovim .. '-' .. v.prerelease end
+    io.stdout:write(('nvim-bundle %s (Neovim %s)\n'):format(VERSION, neovim))
+    return
   end
-  if result.help then
+  if parsed['--help'] then
     io.stdout:write(USAGE)
     return
   end
+
+  local ok, result = pcall(function() return M.build(parse_options(parsed)) end)
+  if not ok then exit_error(result) end
   io.stdout:write(
     ('bundled %d modules into %s (entry %s)\n'):format(result.modules, result.out, result.entry)
   )
 end
 
-local function is_main()
-  local info = debug.getinfo(1, 'S')
-  local argv0 = arg and arg[0]
-  if not info or not argv0 or info.source:sub(1, 1) ~= '@' then return false end
-  local this = vim.fs.normalize(vim.fn.fnamemodify(info.source:sub(2), ':p'))
-  return this == vim.fs.normalize(vim.fn.fnamemodify(argv0, ':p'))
-end
-
-if is_main() then M.main(arg) end
+if running_as_main then main(arg) end
 
 return M

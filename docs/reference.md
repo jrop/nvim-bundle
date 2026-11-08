@@ -12,21 +12,31 @@ Options:
   --root <dir>       Source root to scan (default: lua)
   --out <file>       Output bundle (default: dist/<entry>.lua)
   --exclude <glob>   Skip paths matching <glob> (repeatable)
+  --bin              Make an executable that returns the entry module
   -h, --help         Show this help
+  -V, --version      Print the nvim-bundle and Neovim versions
 ```
 
-Options:
+`<entry>` is a module name, not a file path. A dotted entry such as
+`myplugin.core` resolves to `lua/myplugin/core.lua` first, then to
+`lua/myplugin/core/init.lua`. The command scans `--root`, writes one file, and
+prints a summary.
 
 | Option             | Behavior                                                              |
 | ------------------ | --------------------------------------------------------------------- |
 | `--root <dir>`     | Changes the directory that is scanned. The default is `lua`.          |
 | `--out <file>`     | Changes the generated file. The default is `dist/<entry>.lua`.        |
 | `--exclude <glob>` | Skips matching files. Repeat the option to add more globs.            |
+| `--bin`            | Adds a shebang, makes the file executable, and returns the entry.     |
 | `-h`, `--help`     | Prints usage without bundling anything.                               |
+| `-V`, `--version`  | Prints the nvim-bundle and Neovim versions without bundling.          |
 
-`<entry>` is a module name, not a file path. A dotted entry such as
-`myplugin.core` resolves to `lua/myplugin/core.lua` first, then to
-`lua/myplugin/core/init.lua`.
+`nvim-bundle --version` and `nvim-bundle -V` print the nvim-bundle version and
+the Neovim version that is running it, for example:
+
+```text
+nvim-bundle 0.1.0 (Neovim 0.12.6)
+```
 
 The command exits with status 0 on success and status 1 on failure. Errors are
 written to stderr. `--help` prints usage and exits successfully.
@@ -54,9 +64,9 @@ layout with `module id collision`.
 
 ## Generated bundle
 
-The generated file returns a registry table keyed by module id. Each value is a
-lazy loader that returns that module's exports. The file also defines a module
-table named `__mods`.
+By default, the generated file returns a registry table keyed by module id.
+Each value is a lazy loader that returns that module's exports. The file also
+defines a module table named `__mods`.
 
 - Each module is stored as a function whose field name derives from the module
   id. For example, `myplugin.util` becomes `__mods._myplugin_util`.
@@ -84,20 +94,28 @@ table named `__mods`.
 - The bundle's modules are private to the bundle: the host only caches the
   registry under the bundle's name.
 
+With `--bin`, the file is an executable instead. It starts with the shebang
+`#!/usr/bin/env -S nvim --clean -l` and a modeline, carries the executable bit,
+and returns the entry module's value rather than the registry. The entry module
+decides whether it is the main script, so executing the file runs its own
+`main` guard and requiring it returns the entry's exports. The registry is not
+reachable from a `--bin` bundle.
+
 See [How static linking works](explanation.md#how-static-linking-works) for the
 reason behind these rules.
 
 ## Programmatic API
 
-### `NvimBundle.run(argv)`
+### `NvimBundle.build(opts)`
 
 ```lua
 local NvimBundle = require 'nvim-bundle'
-local result = NvimBundle.run { 'myplugin', '--root', 'lua' }
+local result = NvimBundle.build { entry = 'myplugin' }
 ```
 
-`argv` is an array of CLI arguments, without the program name. `run` raises on
-failure and returns:
+`entry` is required. `root` defaults to `lua`, `out` defaults to
+`dist/<entry>.lua`, and `exclude` defaults to an empty list. Set `bin = true` to
+make the output executable.
 
 ```lua
 {
@@ -108,15 +126,11 @@ failure and returns:
 ```
 
 `out` is the output path, `entry` is the resolved entry module id, and `modules`
-is the number of emitted modules.
+is the number of emitted modules. `build` raises on failure. The process
+boundary around it is private; running the script or a `--bin` bundle is the
+supported way to get the summary, error, and exit-status behavior.
 
-### `NvimBundle.main(argv)`
-
-`main` is the CLI wrapper around `run`. It prints the summary to stdout, writes
-errors to stderr, and calls `os.exit(1)` on failure. Use it when you are
-implementing an executable and want the default CLI behavior.
-
-## Build validation
+## Validation
 
 The bundler stops before writing a bundle when:
 
@@ -135,6 +149,7 @@ final newline is added.
 
 - `README.md` — tutorial and documentation entry point.
 - `lua/nvim-bundle.lua` — the bundler and its CLI entry point.
+- `lua/nvim-bundle/_vendor/args.lua` — vendored args.nvim argument parser.
 - `docs/how-to.md` — task-oriented guides.
 - `docs/reference.md` — this reference.
 - `docs/explanation.md` — design rationale and limitations.

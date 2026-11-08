@@ -135,12 +135,23 @@ mise run ci
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-cp lua/nvim-bundle.lua "$tmp/nvim-bundle"
-chmod 755 "$tmp/nvim-bundle"
+
+# The source constant is the version a checkout reports. Stamp the tag into a
+# copy of the source tree, then bundle that copy with --bin. Bundling inlines
+# the vendored modules, so the published asset stays one self-contained file;
+# --bin adds the shebang, the modeline, and the executable bit.
+mkdir -p "$tmp/src"
+cp -R lua "$tmp/src/lua"
+sed "s/^local VERSION = '.*'$/local VERSION = '${tag#v}'/" \
+  "$tmp/src/lua/nvim-bundle.lua" > "$tmp/src/lua/nvim-bundle.lua.stamped"
+mv "$tmp/src/lua/nvim-bundle.lua.stamped" "$tmp/src/lua/nvim-bundle.lua"
+nvim --clean -l lua/nvim-bundle.lua \
+  --bin --root "$tmp/src/lua" --out "$tmp/nvim-bundle" nvim-bundle
 
 # Check the artifact through its shebang, not through `nvim -l`, so a broken
 # executable or interpreter line is caught before the release is published.
 "$tmp/nvim-bundle" --help >/dev/null
+"$tmp/nvim-bundle" --version | grep -q "^nvim-bundle ${tag#v} (Neovim "
 
 (
   cd "$tmp"

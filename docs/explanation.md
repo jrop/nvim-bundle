@@ -35,9 +35,9 @@ Each module is evaluated at most once. Its value is cached in a block-local
 upvalue, and a require cycle raises
 `loop or previous error loading module '<name>'` instead of recursing forever.
 
-The generated file returns a registry keyed by module id. Each value is a lazy
-loader that calls the module's function, so requiring the bundle evaluates no
-module:
+By default, the generated file returns a registry keyed by module id. Each
+value is a lazy loader that calls the module's function, so requiring the
+bundle evaluates no module:
 
 ```lua
 return {
@@ -57,6 +57,30 @@ non-identifier characters become underscores, and every name gets a leading
 underscore, so `myplugin.util` becomes `_myplugin_util`. The prefix keeps names
 valid even when the module id is a Lua keyword or starts with a digit. Names
 that still collide gain a numeric suffix.
+
+## Executable bundles
+
+An executable bundle should behave like its entry source: requiring it returns
+the entry's exports, and running it invokes the entry's main behavior. `--bin`
+implements that rule by ending the generated file with
+`return __mods._entry("entry")` instead of returning the registry; it also
+prepends the shebang and sets the executable bit.
+
+An example is nvim-bundle's own entry. Its source computes `running_as_main`
+with `is_main`, which compares the chunk that defined it with `arg[0]`, and its
+final block runs the CLI only when that value is true. In a `--bin` bundle the
+entry's chunk is the bundle file, so executing the bundle makes the comparison
+true and runs the CLI; a plugin that requires the same file makes `arg[0]` its
+own script, so the comparison is false and `require` returns the module table.
+
+The bundler deliberately does not generate its own `is_main` guard. A generated
+guard would either need to return the registry as well -- breaking the
+`require` shape that the source file already promises -- or call the entry
+unconditionally, which evaluates the entry on library require and duplicates
+the entry's own check. Keeping the check in the entry means one implementation
+and one place to change. The tradeoff is that a `--bin` bundle does not expose
+the registry, so submodules are reachable only through the entry's static
+requires.
 
 ## Why some requires stay dynamic
 
@@ -135,3 +159,19 @@ The bundler is not a tree-shaker. It includes every `.lua` file below the
 source root, minus excludes, whether or not the entry reaches it. This keeps
 the module-id mapping predictable and avoids building a separate module graph,
 at the cost of carrying unused files in the output.
+
+## Dogfooding the argument parser
+
+nvim-bundle parses its own command line with a vendored copy of args.nvim, and
+the release task builds nvim-bundle with nvim-bundle. An example is the release
+asset: the task stamps the tag into a temporary copy of `lua/`, then runs
+`nvim-bundle --bin nvim-bundle` on that copy. The `--bin` output inlines the
+vendored module, so the published asset remains one file even though the source
+tree now contains a `require`.
+
+A source checkout needs one small bootstrap. An example is running
+`lua/nvim-bundle.lua` directly: Neovim does not put the script's sibling `lua/`
+directory on `package.path`, so the script prepends that directory before
+requiring the vendored module. The bootstrap fires only when the script is the
+main chunk and the vendor file exists, so a required bundle leaves the host's
+`package.path` alone.
