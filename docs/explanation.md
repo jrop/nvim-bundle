@@ -164,8 +164,8 @@ at the cost of carrying unused files in the output.
 
 nvim-bundle parses its own command line with a vendored copy of args.nvim, and
 the release task builds nvim-bundle with nvim-bundle. An example is the release
-asset: the task stamps the tag into a temporary copy of `lua/`, then runs
-`nvim-bundle --bin nvim-bundle` on that copy. The `--bin` output inlines the
+asset: the task runs the checkout's own `lua/nvim-bundle.lua` over `lua/` with
+`--bin`, then stamps the tag into the built file. The `--bin` output inlines the
 vendored module, so the published asset remains one file even though the source
 tree now contains a `require`.
 

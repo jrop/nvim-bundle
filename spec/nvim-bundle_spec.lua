@@ -3,6 +3,17 @@
 --- @diagnostic disable: need-check-nil
 --- @diagnostic disable: undefined-field
 
+-- Under `busted --coverage`, luacov's tick interval flushes every 100 hits, but
+-- the parent test process exits through Neovim rather than Lua's os.exit, so
+-- the final partial batch would be lost without this save.
+if package.loaded['luacov.runner'] then
+  ---@type { save_stats: fun() }
+  local runner = package.loaded['luacov.runner']
+  vim.api.nvim_create_autocmd('VimLeavePre', {
+    callback = function() runner.save_stats() end,
+  })
+end
+
 --- Black-box tests for the bundler. Every case writes a small source tree to a
 --- temporary directory, runs the CLI, and then executes or inspects the output.
 
@@ -56,9 +67,17 @@ local function cli(argv)
   if package.loaded['luacov.runner'] then
     cmd[#cmd + 1] = '--cmd'
     cmd[#cmd + 1] = 'lua require("luacov")'
+    -- The child runs too few instrumented lines to reach luacov's tick
+    -- interval, and Neovim does not exit through Lua's os.exit, so save at the
+    -- event Neovim does emit.
+    cmd[#cmd + 1] = '--cmd'
+    cmd[#cmd + 1] = 'autocmd VimLeavePre * lua require("luacov.runner").save_stats()'
   end
   cmd[#cmd + 1] = '-l'
-  cmd[#cmd + 1] = vim.fn.fnamemodify('lua/nvim-bundle.lua', ':p')
+  -- Keep this relative. luacov keys stats by the path string a chunk was loaded
+  -- from, so the parent's relative `lua/nvim-bundle.lua` and the child's
+  -- absolute path would appear as two files in the coverage report.
+  cmd[#cmd + 1] = 'lua/nvim-bundle.lua'
   for _, arg in ipairs(argv) do
     cmd[#cmd + 1] = arg
   end
@@ -110,12 +129,12 @@ local function run_fail(argv, pattern)
   )
 end
 
---- Load the module under test directly, so its chunk name is absolute and
---- matches the CLI child process in coverage reports.
+--- Load the module under test directly with the same relative chunk name that
+--- the `.busted` lpath and the CLI child use, so luacov merges every run into
+--- one report row.
 --- @return table
 local function load_module()
-  local path = vim.fn.fnamemodify('lua/nvim-bundle.lua', ':p')
-  local chunk, err = loadfile(path)
+  local chunk, err = loadfile 'lua/nvim-bundle.lua'
   assert.is_truthy(chunk, err)
   --- @cast chunk function
   return chunk()

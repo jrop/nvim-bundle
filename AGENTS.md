@@ -111,8 +111,8 @@ successful `require` must have been statically linked into the bundle.
   indent, 100-column width, sorted requires.
 - Generated bundles are build artifacts and live under `dist/`, which is
   git-ignored.
-- The release task stamps the tag into a temporary copy of `lua/`, then builds
-  that copy with `--bin` into the extensionless `nvim-bundle` asset. The
+- The release task builds `lua/` with `--bin` into the extensionless
+  `dist/nvim-bundle` asset, then stamps the tag into the built file. The
   self-bundle inlines the vendored parser, keeps the `require 'nvim-bundle'`
   return shape, and carries its own shebang and modeline. The source keeps its
   `.lua` extension so `stylua`, `emmylua_check`, and `require 'nvim-bundle'`
@@ -120,7 +120,7 @@ successful `require` must have been statically linked into the bundle.
 - Module ids follow Neovim's lookup order: `lua/foo.lua` shadows
   `lua/foo/init.lua`, so the init file is addressable as `foo.init`.
 - `VERSION` in `lua/nvim-bundle.lua` is the version a checkout reports. The
-  release task stamps the tag into the copied asset, so the published
+  release task stamps the tag into the built asset, so the published
   `--version` always matches its release.
 - Do not reintroduce `--source-strings`: sources are always emitted as code so
   language-server annotations remain visible.

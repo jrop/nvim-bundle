@@ -5,7 +5,7 @@
 [tools]
 # nvimv needs jq:
 jq = "1.8.2"
-"asdf:mise-plugins/mise-lua" = "5.1.5"
+"asdf:mise-plugins/mise-lua" = { version = "5.1.5", install_env = { ASDF_LUA_LUAROCKS_VERSION = "3.12.2" } }
 # Since busted is configured to run under "nvim", keep a default version
 # installed. `test:version:no-prep` overrides it with `eval $(nvimv env VERSION)`,
 # so ordinary commands do not need that dance:
@@ -23,7 +23,6 @@ cargo-binstall = "1.26.2"
 ################################################################################
 
 [env]
-ASDF_LUA_LUAROCKS_VERSION = "3.12.2"
 _.source = { path = "./scripts/env.sh", tools = true }
 
 ################################################################################
@@ -117,59 +116,43 @@ description = "Publish the current v* tag as a GitHub release"
 run = '''
 set -eu
 
-# `git describe` fails unless HEAD is exactly at a tag. Restricting the match
-# to v* keeps unrelated tags from being mistaken for releases.
-tag="$(git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null || true)"
-if [ -z "$tag" ]; then
+# `--exact-match` refuses a commit that is not itself tagged, so the version
+# stamped below always names this exact release.
+tag="$(git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null)" || {
   echo "release: HEAD must be at a v* tag" >&2
   exit 1
-fi
+}
 
 git submodule update --init --recursive
-if [ -n "$(git status --porcelain)" ]; then
+test -z "$(git status --porcelain)" || {
   echo "release: working tree is not clean" >&2
   exit 1
-fi
+}
 
 mise run ci
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-# The source constant is the version a checkout reports. Stamp the tag into a
-# copy of the source tree, then bundle that copy with --bin. Bundling inlines
-# the vendored modules, so the published asset stays one self-contained file;
-# --bin adds the shebang, the modeline, and the executable bit.
-mkdir -p "$tmp/src"
-cp -R lua "$tmp/src/lua"
-sed "s/^local VERSION = '.*'$/local VERSION = '${tag#v}'/" \
-  "$tmp/src/lua/nvim-bundle.lua" > "$tmp/src/lua/nvim-bundle.lua.stamped"
-mv "$tmp/src/lua/nvim-bundle.lua.stamped" "$tmp/src/lua/nvim-bundle.lua"
+# Build with the checkout's own bundler. --bin adds the shebang, the modeline,
+# and the executable bit, and inlines the vendored parser. The output name has
+# no .lua extension because it is published as a command.
 nvim --clean -l lua/nvim-bundle.lua \
-  --bin --root "$tmp/src/lua" --out "$tmp/nvim-bundle" nvim-bundle
+  --bin --root lua --out dist/nvim-bundle nvim-bundle
 
-# Check the artifact through its shebang, not through `nvim -l`, so a broken
-# executable or interpreter line is caught before the release is published.
-"$tmp/nvim-bundle" --help >/dev/null
-"$tmp/nvim-bundle" --version | grep -q "^nvim-bundle ${tag#v} (Neovim "
+# The bundler copies module source verbatim, so stamping after the build is
+# equivalent to stamping a source copy, without the copy or its temp path in
+# the generated header.
+sed "s/^local VERSION = '.*'$/local VERSION = '${tag#v}'/" dist/nvim-bundle > dist/nvim-bundle.new
+mv dist/nvim-bundle.new dist/nvim-bundle
+chmod +x dist/nvim-bundle
 
-(
-  cd "$tmp"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum nvim-bundle > nvim-bundle.sha256
-  else
-    shasum -a 256 nvim-bundle > nvim-bundle.sha256
-  fi
-)
+# Only the bundle has the shebang and the inlined parser, so check those.
+./dist/nvim-bundle --version | grep -q "^nvim-bundle ${tag#v} (Neovim "
 
-# --verify-tag refuses to create a release for a tag that has not been pushed,
-# which keeps the uploaded artifact tied to the tag GitHub will serve.
+# Hash from inside dist so the checksum names `nvim-bundle`.
+(cd dist && shasum -a 256 nvim-bundle > nvim-bundle.sha256)
+
 gh release create "$tag" \
-  "$tmp/nvim-bundle" \
-  "$tmp/nvim-bundle.sha256" \
-  --title "$tag" \
+  dist/nvim-bundle \
+  dist/nvim-bundle.sha256 \
   --generate-notes \
   --verify-tag
-
-echo "published $tag"
 '''

@@ -204,8 +204,8 @@ git push origin v0.1.0
 mise run release
 ```
 
-The task runs `mise run ci`, copies `lua/` to a temporary directory, stamps the
-tag into that copy, and bundles it with `--bin`. The self-bundle inlines the
+The task runs `mise run ci`, bundles `lua/` into `dist/nvim-bundle` with
+`--bin`, and stamps the tag into the built file. The self-bundle inlines the
 vendored argument parser, so the extensionless `nvim-bundle` asset stays a
 single file while also being executable, and its `--version` names the release
 even though a checkout reports the `VERSION` constant in `lua/nvim-bundle.lua`.
