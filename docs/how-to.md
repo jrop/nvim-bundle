@@ -59,13 +59,13 @@ For development, initialize the type-stub submodule as described in
 To bundle another project from a checkout, point Neovim at the script:
 
 ```sh
-nvim --clean -l /path/to/nvim-bundle/lua/nvim-bundle.lua myplugin
+nvim --clean -l /path/to/nvim-bundle/lua/nvim-bundle.lua build myplugin
 ```
 
 The script is executable, so the direct form also works:
 
 ```sh
-./lua/nvim-bundle.lua myplugin
+./lua/nvim-bundle.lua build myplugin
 ```
 
 ### As a vendored file
@@ -83,11 +83,11 @@ bundled.
 From the root of the plugin you want to bundle:
 
 ```sh
-nvim-bundle myplugin
+nvim-bundle build myplugin
 ```
 
-With the default options, this scans `lua/`, uses `myplugin` as the entry
-module, and writes `dist/myplugin.lua`. Load the generated file directly:
+With the default options, this scans `lua/` and writes `dist/myplugin.lua`,
+which returns `myplugin`'s value. Load the generated file directly:
 
 ```lua
 local myplugin = dofile('dist/myplugin.lua')
@@ -100,11 +100,31 @@ mkdir -p ~/.local/share/nvim/site/lua
 cp dist/myplugin.lua ~/.local/share/nvim/site/lua/myplugin.lua
 ```
 
-To use a different entry, source root, or output path:
+To use a different module, source root, or output path:
 
 ```sh
-nvim-bundle entry --root src --out build/entry.lua
+nvim-bundle build entry --root src --out build/entry.lua
 ```
+
+## Bundle a library with several entry points
+
+Leave out the module name:
+
+```sh
+nvim-bundle build
+```
+
+The output is named after the one package under `lua/`, such as
+`dist/myplugin.lua`, and returns a registry with one lazy loader per module.
+Index it with a literal module id, so the language server keeps that module's
+type:
+
+```lua
+local bundle = require 'myplugin'
+local core = bundle['myplugin.core']()
+```
+
+Pass `--out` when `lua/` holds more than one package.
 
 ## Build an executable bundle
 
@@ -112,7 +132,7 @@ Pass `--bin` when the bundle is a program rather than a library. An example is
 a command-line tool whose entry exports `main`:
 
 ```sh
-nvim-bundle mycli --bin --out dist/mycli
+nvim-bundle build mycli --bin --out dist/mycli
 ./dist/mycli --help
 ```
 
@@ -120,16 +140,14 @@ The output starts with a shebang and a modeline, carries the executable bit,
 and returns the entry module's value. The entry module must detect when it is
 the main script, typically by comparing `debug.getinfo(1, 'S').source` with
 `arg[0]`; the generated file does not add a second guard. Requiring the same
-file returns the entry's exports without running its main path. A `--bin`
-bundle does not return the module registry, so submodules are reachable only
-through the entry's static requires.
+file returns the entry's exports without running its main path.
 
 ## Exclude tests and vendor files
 
 Repeat `--exclude` for each path pattern you want to skip:
 
 ```sh
-nvim-bundle myplugin \
+nvim-bundle build myplugin \
   --exclude '**/_test/**' \
   --exclude '**/vendor/**'
 ```
@@ -162,6 +180,78 @@ local result = NvimBundle.build {
 script and `--bin` bundles are the supported ways to get the printed summary,
 stderr errors, and exit status 1 on failure. See the
 [Programmatic API](reference.md#programmatic-api).
+
+## Vendor a dependency
+
+Install a dependency from a tag of its repository, naming the module you want
+it to return:
+
+```sh
+nvim-bundle install jrop/args.nvim@v0.1.0 args
+```
+
+nvim-bundle clones the tag, builds it as `nvim-bundle build args`, and writes
+the bundle to `lua/<name>/vendor/args.lua`, so your code loads it with:
+
+```lua
+local args = require 'myplugin.vendor.args'
+```
+
+Leave out the module to vendor a registry of every module in the dependency
+instead; see [When to choose a registry](explanation.md#when-to-choose-a-registry).
+
+`owner/repo` is shorthand for a GitHub repository. Any other host takes its git
+URL, such as `https://codeberg.org/owner/dep.nvim@v1.0.0`. Pass `--as <alias>`
+to choose a different file name, and `--force` to replace a file already in
+`vendor/` that nvim-bundle did not write. Commit `vendor/`, `nvim-bundle.json`,
+and `nvim-bundle.lock.json` together.
+
+## Vendor an untagged repository
+
+Name a branch after the `@` to follow it, or a full commit SHA to pin it:
+
+```sh
+nvim-bundle install owner/dep.nvim@main
+nvim-bundle install owner/dep.nvim@3f9c2e1d4b6a8c0e2f4a6b8d0c2e4f6a8b0d2c4e
+```
+
+`update` moves a branch to its current head, and leaves a SHA where it is.
+
+When the repository keeps its modules outside `lua/`, or ships files you don't
+want, pass the same options `build` takes:
+
+```sh
+nvim-bundle install owner/dep.nvim@main dep --root src --exclude '**/_test/**'
+```
+
+`nvim-bundle.json` records them, so a later `nvim-bundle install` builds the
+dependency the same way.
+
+## Keep vendored files in sync in CI
+
+Run a frozen install before the tests:
+
+```sh
+nvim-bundle install --frozen
+```
+
+It exits with status 1 and names each dependency that would be resolved,
+restored, or removed, i.e., any vendored file that drifted from the lock.
+Without `--frozen`, the same command repairs `vendor/` instead.
+
+## Update dependencies
+
+List what has a newer stable tag or branch head, then move to it:
+
+```sh
+nvim-bundle outdated
+nvim-bundle update          # every dependency
+nvim-bundle update args     # one dependency
+```
+
+`update` rewrites the tags in `nvim-bundle.json`, and branch commits in the
+lock, so review the diff like any
+other dependency bump. To drop a dependency, run `nvim-bundle remove args`.
 
 ## Develop nvim-bundle
 
@@ -208,7 +298,7 @@ The task runs `mise run ci`, bundles `lua/` into `dist/nvim-bundle` with
 `--bin`, and stamps the tag into the built file. The self-bundle inlines the
 vendored argument parser, so the extensionless `nvim-bundle` asset stays a
 single file while also being executable, and its `--version` names the release
-even though a checkout reports the `VERSION` constant in `lua/nvim-bundle.lua`.
+even though a checkout reports the `VERSION` constant in `lua/nvim-bundle/version.lua`.
 The task writes `nvim-bundle.sha256` and creates the GitHub release. It refuses
 to publish when `HEAD` is not tagged, the tree is dirty, or the remote tag does
 not exist.

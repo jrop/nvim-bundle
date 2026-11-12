@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "args": {
+      "entry": "args",
+      "ref": "v0.1.0",
+      "repo": "jrop/args.nvim"
+    }
+  },
+  "name": "nvim-bundle"
+}

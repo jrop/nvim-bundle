@@ -5,8 +5,8 @@ Statically link a Neovim plugin's Lua modules into one file.
 `nvim-bundle` resolves `require 'literal'` calls at build time, so the generated
 file calls bundled module functions directly. Module sources stay Lua code, so
 LuaLS and EmmyLua annotations remain visible. Calls the linker cannot resolve
-stay ordinary host `require` calls. The generated file exports a registry of
-lazy module loaders keyed by module id.
+stay ordinary host `require` calls. The generated file returns the module you
+name, as `require` would, or a registry of lazy loaders when you name none.
 
 ## Requirements
 
@@ -59,20 +59,20 @@ generated file. We will use the `nvim-bundle` command from `PATH`.
 2. Bundle the entry module:
 
    ```sh
-   nvim-bundle demo
+   nvim-bundle build demo
    ```
 
    The output should look like:
 
    ```text
-   bundled 2 modules into dist/demo.lua (entry demo)
+   bundled 2 modules into dist/demo.lua (returns demo)
    ```
 
 3. Load the generated file in Neovim:
 
    ```sh
    nvim --clean --headless \
-     +'lua local bundle = dofile("dist/demo.lua"); print(bundle["demo"]().greet("world"))' \
+     +'lua print(dofile("dist/demo.lua").greet("world"))' \
      +'qa!'
    ```
 
@@ -88,24 +88,16 @@ generated file. We will use the `nvim-bundle` command from `PATH`.
    dynamic, see
    [How static linking works](docs/explanation.md#how-static-linking-works).
 
-   The generated file returns a registry keyed by module id. Each value is a
-   lazy loader, so a literal key preserves that module's type:
-
-   ```lua
-   local bundle = require 'demo'
-   local demo = bundle['demo']()
-   local util = bundle['demo.util']()
-   ```
-
-   Calling a loader evaluates that module at most once, like a static
-   `require`.
+   The generated file returns `demo`'s value, just as `require 'demo'` would
+   for the source tree, so it is a drop-in replacement for `lua/demo/`.
 
 We have built a bundle from two modules and loaded it without installing the
 plugin.
 
-For a command-line tool, pass `--bin` to produce an executable instead of a
-library bundle. It adds a shebang, sets the executable bit, and returns the
-entry module. See
+For a library with several entry points, run `nvim-bundle build` with no
+module to get a registry of every module instead; see
+[Bundle a library with several entry points](docs/how-to.md#bundle-a-library-with-several-entry-points).
+For a command-line tool, pass `--bin` to make the file executable. See
 [Build an executable bundle](docs/how-to.md#build-an-executable-bundle).
 
 ## Documentation

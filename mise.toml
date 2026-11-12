@@ -135,7 +135,7 @@ mise run ci
 # and the executable bit, and inlines the vendored parser. The output name has
 # no .lua extension because it is published as a command.
 nvim --clean -l lua/nvim-bundle.lua \
-  --bin --root lua --out dist/nvim-bundle nvim-bundle
+  build --bin --root lua --out dist/nvim-bundle nvim-bundle
 
 # The bundler copies module source verbatim, so stamping after the build is
 # equivalent to stamping a source copy, without the copy or its temp path in

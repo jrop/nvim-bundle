@@ -8,13 +8,13 @@ resolvable `require` calls are linked directly to the bundled module functions.
 Calls that cannot be resolved statically remain host `require` calls.
 
 The CLI parses arguments with the vendored args.nvim copy at
-`lua/nvim-bundle/_vendor/args.lua`. The release task bundles nvim-bundle with
+`lua/nvim-bundle/vendor/args.lua`. The release task bundles nvim-bundle with
 itself using `--bin`, so that require is also exercised during releases.
 
 The file is also its own CLI entry point, so an example run is:
 
 ```sh
-nvim --clean -l lua/nvim-bundle.lua morph --exclude '**/_test/**'
+nvim --clean -l lua/nvim-bundle.lua build morph --exclude '**/_test/**'
 ```
 
 ## Commands
@@ -45,16 +45,31 @@ busted spec/nvim-bundle_spec.lua
 
 ## Architecture
 
-- **`lua/nvim-bundle.lua`** - argument parsing, the public `build` API,
-  module-id resolution, file discovery, tree-sitter require rewriting, and
-  static bundle assembly.
-- **`lua/nvim-bundle/_vendor/args.lua`** - vendored args.nvim v0.1.0 parser.
+- **`lua/nvim-bundle.lua`** - the CLI: one `COMMANDS` entry per subcommand
+  owns its options, usage text, and `run`. It also exposes the public `build`
+  API.
+- **`lua/nvim-bundle/build.lua`** - module-id resolution, file discovery,
+  tree-sitter require rewriting, and static bundle assembly. It is separate
+  from the CLI so `install` can build dependencies without requiring the CLI
+  module while it is still loading.
+- **`lua/nvim-bundle/deps.lua`** - `install`, `remove`, `update`, and
+  `outdated`. Every dependency is a git repository built from source: it parses
+  each manifest entry once into a dependency value and owns the manifest and
+  lock entries.
+- **`lua/nvim-bundle/git.lua`** - the git commands every dependency goes
+  through: `latest_tag`, `branch_head`, `ref_kind`, and `checkout`.
+- **`lua/nvim-bundle/files.lua`** - file and JSON I/O for building and
+  vendoring. JSON is written with sorted keys so manifests diff cleanly.
+- **`lua/nvim-bundle/version.lua`** - `VERSION`, which the release task stamps.
+- **`lua/nvim-bundle/vendor/args.lua`** - vendored args.nvim v0.1.0 parser.
   Treat it as third-party code: update it from the upstream release rather than
   editing it in place.
 - **`spec/nvim-bundle_spec.lua`** - black-box tests. Each case writes a fixture
   tree to a temporary directory, runs the CLI in a child Neovim, and executes
   or inspects the emitted bundle. The `types` cases shell out to
-  `emmylua_check`.
+  `emmylua_check`. Dependency cases run offline: the `remote` helper
+  makes a local repository with a `file://` URL, and the `owner/repo`
+  shorthand is tested through git's own `url.<base>.insteadOf` setting.
 - **`library/busted`** - git submodule with busted type stubs (stylua-ignored).
 
 ## Documentation
@@ -84,14 +99,20 @@ explanation instead.
   calls, excluded modules, and modules outside the bundle remain host requires.
 - A module that the Lua tree-sitter parser cannot parse also keeps its requires
   dynamic.
-- Modules cache their values in a block-local upvalue inside one `do` block per
-  module, which avoids Lua's 200-local limit and keeps module functions stable
-  enough for `pcall` type inference.
-- A normal bundle returns a registry of lazy loaders. With `--bin`, the bundle
-  instead ends with `return __mods.<entry>(<entry id>)`, so requiring it
-  returns the entry module and executing it lets the entry's own `is_main`
-  guard run. `--bin` also prepends a shebang and modeline and sets the
-  executable bit.
+- Every module function is a thin wrapper around one generic `__load(id, fn,
+  ...)`, which owns caching and cycle detection in a single `__loaded` table.
+  The `fun(...): T` annotation carries each module's return type to the
+  caller; a cache read before it is assigned would otherwise make every
+  `require` of the bundle look nil-able. A module that returns nothing is
+  cached as `true`, as `require` does. Wrappers are never reassigned, so
+  `pcall` inference still has a stable function to look at.
+- `build <entry>` ends the bundle with `return __mods.<field>(<id>)`, so
+  requiring it behaves like requiring the module. `build` with no entry
+  returns a registry of lazy loaders instead, named after the root's one
+  package. `--bin` needs an entry, prepends a shebang and modeline, and sets
+  the executable bit; executing it lets the module's own `is_main` guard run.
+- The entry is looked up by module id, so its file rules are exactly the module
+  id rules.
 
 ## Test environment
 
@@ -119,7 +140,7 @@ successful `require` must have been statically linked into the bundle.
   keep working during development.
 - Module ids follow Neovim's lookup order: `lua/foo.lua` shadows
   `lua/foo/init.lua`, so the init file is addressable as `foo.init`.
-- `VERSION` in `lua/nvim-bundle.lua` is the version a checkout reports. The
+- `VERSION` in `lua/nvim-bundle/version.lua` is the version a checkout reports. The
   release task stamps the tag into the built asset, so the published
   `--version` always matches its release.
 - Do not reintroduce `--source-strings`: sources are always emitted as code so

@@ -19,7 +19,7 @@ end
 
 --- @class CliResult
 --- @field out string
---- @field entry string
+--- @field returns string the returned module id, or `registry`
 --- @field modules number
 
 --- Temporary paths created by the current test, removed in after_each.
@@ -60,8 +60,9 @@ end
 --- Run the CLI in a child Neovim, so every test exercises the same entry point
 --- a user does.
 --- @param argv string[]
+--- @param env table<string, string>? extra environment for the child
 --- @return vim.SystemCompleted
-local function cli(argv)
+local function cli(argv, env)
   local cmd = { 'nvim', '--clean' }
   -- Under `busted --coverage`, instrument the child so its CLI lines count.
   if package.loaded['luacov.runner'] then
@@ -81,21 +82,21 @@ local function cli(argv)
   for _, arg in ipairs(argv) do
     cmd[#cmd + 1] = arg
   end
-  return vim.system(cmd, { text = true }):wait()
+  return vim.system(cmd, { text = true, env = env }):wait()
 end
 
 --- @param stdout string
 --- @return CliResult
 local function parse_summary(stdout)
-  local modules, out, entry = stdout:match '^bundled (%d+) modules into (.-)%s+%(entry (.-)%)%s*$'
+  local modules, out, shape = stdout:match '^bundled (%d+) modules into (.-)%s+%((.-)%)%s*$'
   assert.is_truthy(modules, ('unexpected CLI output: %q'):format(stdout))
   --- @cast modules string
   --- @cast out string
-  --- @cast entry string
+  --- @cast shape string
   return {
     modules = assert(tonumber(modules)),
     out = out,
-    entry = entry,
+    returns = shape:match '^returns (.+)$' or shape,
   }
 end
 
@@ -149,16 +150,17 @@ local function load_bundle(path)
   return chunk
 end
 
---- Bundle `root`'s `entry` and compile the generated file. The caller decides
---- whether executing the chunk should succeed.
+--- Bundle `root` and compile the generated file. Naming `entry` makes the
+--- chunk return that module; omitting it makes the chunk return the registry.
+--- The caller decides whether executing the chunk should succeed.
 --- @param root string
---- @param entry string
+--- @param entry string?
 --- @param opts { bin?: boolean, exclude?: string[] }?
 --- @return function chunk, CliResult result
 local function compile_bundle(root, entry, opts)
   opts = opts or {}
-  local out = root .. '-out/' .. entry .. '.lua'
-  local argv = { '--root', root, '--out', out }
+  local out = root .. '-out/' .. (entry or 'registry') .. '.lua'
+  local argv = { 'build', '--root', root, '--out', out }
   if opts.bin then argv[#argv + 1] = '--bin' end
   for _, glob in ipairs(opts.exclude or {}) do
     argv[#argv + 1] = '--exclude'
@@ -170,11 +172,86 @@ local function compile_bundle(root, entry, opts)
   return load_bundle(result.out), result
 end
 
---- Load one bundled module from a compiled registry.
---- @param chunk function
---- @param id string
+--- @param path string
 --- @return any
-local function module_value(chunk, id) return chunk()[id]() end
+local function read_json(path) return vim.json.decode(slurp(path)) end
+
+--- @param path string
+--- @param value table
+local function write_json(path, value)
+  local f = assert(io.open(path, 'wb'))
+  f:write(vim.json.encode(value))
+  f:close()
+end
+
+--- @param cwd string
+--- @param argv string[]
+--- @return string stdout
+local function git(cwd, argv)
+  local cmd = { 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false' }
+  vim.list_extend(cmd, argv)
+  local proc = vim.system(cmd, { cwd = cwd, text = true }):wait()
+  assert.are.equal(0, proc.code, proc.stderr)
+  return vim.trim(proc.stdout or '')
+end
+
+--- @class Remote
+--- @field url string a `file://` URL, so dependency specs clone offline
+--- @field commit fun(files: table<string, string>, tag?: string): string
+--- @field branch fun(name: string) creates or moves `name` to the current commit
+
+--- A local repository standing in for a dependency's remote. Each commit
+--- writes `files` on top of the previous tree, so a test can tag several
+--- versions or advance the `main` branch.
+--- @param dir string? where to create it (default: a fresh temporary directory)
+--- @return Remote
+local function remote(dir)
+  dir = dir or fixture {}
+  vim.fn.mkdir(dir, 'p')
+  git(dir, { 'init', '-q', '-b', 'main' })
+  return {
+    url = 'file://' .. dir,
+    commit = function(files, tag)
+      for rel, content in pairs(files) do
+        local path = dir .. '/' .. rel
+        vim.fn.mkdir(vim.fs.dirname(path), 'p')
+        local f = assert(io.open(path, 'wb'))
+        f:write(content)
+        f:close()
+      end
+      git(dir, { 'add', '-A' })
+      git(dir, { 'commit', '-q', '--allow-empty', '-m', tag or 'commit' })
+      if tag then git(dir, { 'tag', '-f', '-a', tag, '-m', tag }) end
+      return git(dir, { 'rev-parse', 'HEAD' })
+    end,
+    branch = function(name) git(dir, { 'branch', '-f', name }) end,
+  }
+end
+
+--- @return string
+local function cli_version()
+  local found = ((cli { '--version' }).stdout or ''):match '^nvim%-bundle (%S+)'
+  return assert(found)
+end
+
+--- Require package `alias` from the registry vendored under that alias, for
+--- specs about which commit was vendored rather than the bundle's shape.
+--- @param project string
+--- @param alias string
+local function require_vendored(project, alias)
+  return load_bundle(('%s/lua/myplug/vendor/%s.lua'):format(project, alias))()[alias]()
+end
+
+--- Run `install` in `project` and require it to succeed.
+--- @param project string
+--- @param argv string[]
+--- @param env table<string, string>?
+local function install(project, argv, env)
+  local cmd = { '-C', project, 'install' }
+  vim.list_extend(cmd, argv)
+  local proc = cli(cmd, env)
+  assert.are.equal(0, proc.code, proc.stderr)
+end
 
 describe('nvim-bundle', function()
   after_each(function()
@@ -208,41 +285,63 @@ describe('nvim-bundle', function()
   end)
 
   describe('arguments', function()
-    it('rejects a missing entry', function()
-      run_fail({}, 'missing entry module (for example: myplugin)')
-      run_fail({ '--root', 'lua' }, 'missing entry module (for example: myplugin)')
+    it('requires an entry for --bin', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      run_fail(
+        { 'build', '--bin', '--root', root, '--out', root .. '-out/x' },
+        '--bin needs an entry (for example: nvim-bundle build mycli --bin)'
+      )
     end)
 
     it(
       'rejects an unknown option',
-      function() run_fail({ '--nope', 'entry' }, 'unknown or unexpected option: --nope') end
+      function() run_fail({ 'build', '--nope', 'entry' }, 'unknown or unexpected option: --nope') end
     )
 
     it('accepts an inline long-option value', function()
       local root = fixture { ['entry.lua'] = 'return 1\n' }
       local out = root .. '-out/entry.lua'
-      local result = run_ok { '--root=' .. root, '--out=' .. out, 'entry' }
+      local result = run_ok { 'build', '--root=' .. root, '--out=' .. out, 'entry' }
 
       assert.are.equal(out, result.out)
     end)
 
     it(
       'rejects an option with no value',
-      function() run_fail({ '--root' }, 'option requires argument: --root') end
+      function() run_fail({ 'build', '--root' }, 'option requires argument: --root') end
     )
 
     it(
       'rejects extra positional arguments',
-      function() run_fail({ 'entry', 'extra' }, 'unexpected argument extra') end
+      function() run_fail({ 'build', 'entry', 'extra' }, 'unexpected argument extra') end
     )
 
-    it('returns help without bundling', function()
+    it('lists the subcommands in the top-level help', function()
       for _, flag in ipairs { '--help', '-h' } do
         local help = run_help { flag }
-        assert.is_truthy(help:find('Usage: nvim-bundle <entry>', 1, true), help)
+        assert.is_truthy(help:find('Usage: nvim-bundle <command>', 1, true), help)
+        assert.is_truthy(help:find('build', 1, true), help)
+      end
+    end)
+
+    it('returns build help without bundling', function()
+      for _, flag in ipairs { '--help', '-h' } do
+        local help = run_help { 'build', flag }
+        assert.is_truthy(help:find('Usage: nvim-bundle build [<entry>]', 1, true), help)
         assert.is_truthy(help:find('--root', 1, true), help)
       end
     end)
+
+    it('rejects an entry given without a subcommand', function()
+      local root = fixture { ['entry.lua'] = 'return 1\n' }
+      run_fail({ '--root', root, 'entry' }, 'unknown or unexpected option: --root')
+      run_fail({ 'entry' }, 'unknown command: entry')
+    end)
+
+    it(
+      'requires a subcommand',
+      function() run_fail({}, 'missing command (for example: nvim-bundle build myplugin)') end
+    )
 
     it('prints both versions', function()
       for _, flag in ipairs { '--version', '-V' } do
@@ -255,29 +354,54 @@ describe('nvim-bundle', function()
 
     it('reports an entry file that is not on disk', function()
       local root = fixture { ['present.lua'] = 'return 1\n' }
-      run_fail({ '--root', root, 'missing' }, 'entry "missing" not found')
+      run_fail({ 'build', '--root', root, 'missing' }, 'module "missing" is not in the bundle')
     end)
   end)
 
   describe('output', function()
-    it('returns a registry with a loader for each bundled module', function()
+    it('returns the named module', function()
       local root = fixture { ['entry.lua'] = 'return { answer = 42 }\n' }
-      local registry = compile_bundle(root, 'entry')()
+      local chunk, result = compile_bundle(root, 'entry')
 
+      assert.are.equal('entry', result.returns)
+      assert.are.equal(42, chunk().answer)
+      assert.is_truthy(slurp(result.out):find('\n-- returns: entry\n', 1, true))
+    end)
+
+    it('returns a registry with a loader for each module when none is named', function()
+      local root = fixture { ['entry.lua'] = 'return { answer = 42 }\n' }
+      local chunk, result = compile_bundle(root)
+      local registry = chunk()
+
+      assert.are.equal('registry', result.returns)
       assert.is_function(registry['entry'])
       assert.are.equal(42, registry['entry']().answer)
+      assert.is_truthy(slurp(result.out):find('\n-- returns: registry\n', 1, true))
+    end)
+
+    it('names a registry after the one package under the root', function()
+      local project = fixture { ['lua/pkg/init.lua'] = 'return 1\n' }
+      local result = run_ok { '-C', project, 'build' }
+
+      assert.are.equal('dist/pkg.lua', result.out)
+      assert.are.equal('registry', result.returns)
+    end)
+
+    it('asks for --out when a registry has no single package name', function()
+      local project = fixture { ['lua/a.lua'] = 'return 1\n', ['lua/b.lua'] = 'return 2\n' }
+      run_fail({ '-C', project, 'build' }, 'pass --out')
     end)
 
     it('resolves an entry given as a dotted module path', function()
       local root = fixture { ['pkg/mod.lua'] = "return 'pkg-mod'\n" }
       local chunk = compile_bundle(root, 'pkg.mod')
-      assert.are.equal('pkg-mod', module_value(chunk, 'pkg.mod'))
+      assert.are.equal('pkg-mod', chunk())
     end)
 
     it('resolves an entry directory via init.lua', function()
       local root = fixture { ['pkg/init.lua'] = "return 'pkg-init'\n" }
       local chunk = compile_bundle(root, 'pkg')
-      assert.are.equal('pkg-init', module_value(chunk, 'pkg'))
+      assert.are.equal('pkg-init', chunk())
     end)
 
     it('strips a UTF-8 BOM and a shebang from module sources', function()
@@ -285,7 +409,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = '\239\187\191#!/usr/bin/env -S nvim --clean -l\nreturn 7\n',
       }
       local chunk = compile_bundle(root, 'entry')
-      assert.are.equal(7, module_value(chunk, 'entry'))
+      assert.are.equal(7, chunk())
     end)
 
     it('bundles required modules instead of using the host searcher', function()
@@ -293,7 +417,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return require 'dep'\n",
         ['dep.lua'] = "return { from = 'fixture' }\n",
       }
-      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      local entry = compile_bundle(root, 'entry')()
       assert.are.equal('fixture', entry.from)
     end)
 
@@ -301,7 +425,7 @@ describe('nvim-bundle', function()
       package.loaded['bundle_host_probe'] = 'from-host'
       local ok, value = pcall(function()
         local root = fixture { ['entry.lua'] = "return require 'bundle_host_probe'\n" }
-        return module_value(compile_bundle(root, 'entry'), 'entry')
+        return compile_bundle(root, 'entry')()
       end)
       package.loaded['bundle_host_probe'] = nil
       assert.is_true(ok, tostring(value))
@@ -314,7 +438,7 @@ describe('nvim-bundle', function()
         ['shadow.lua'] = "return 'flat'\n",
         ['shadow/init.lua'] = "return 'init'\n",
       }
-      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      local entry = compile_bundle(root, 'entry')()
       assert.are.equal('flat', entry.flat)
       assert.are.equal('init', entry.init)
     end)
@@ -325,7 +449,7 @@ describe('nvim-bundle', function()
         ['loop.lua'] = "return require 'loop'\n",
       }
       local chunk = compile_bundle(root, 'entry')
-      local ok, err = pcall(function() return module_value(chunk, 'entry') end)
+      local ok, err = pcall(function() return chunk() end)
       assert.is_false(ok)
       assert.is_truthy(
         tostring(err):find("loop or previous error loading module 'loop'", 1, true),
@@ -400,7 +524,7 @@ describe('nvim-bundle', function()
 
     it('bundles nvim-bundle itself into a working executable', function()
       local out = fixture {} .. '-out/nvim-bundle'
-      run_ok { '--root', 'lua', '--out', out, '--bin', 'nvim-bundle' }
+      run_ok { 'build', '--root', 'lua', '--out', out, '--bin', 'nvim-bundle' }
 
       local proc = vim.system({ 'nvim', '--clean', '-l', out, '--version' }, { text = true }):wait()
       assert.are.equal(0, proc.code, proc.stderr)
@@ -419,7 +543,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "local ok, dep = pcall(require, 'dep')\nreturn { ok = ok, dep = dep }\n",
         ['dep.lua'] = "return 'dep'\n",
       }
-      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      local entry = compile_bundle(root, 'entry')()
       assert.is_true(entry.ok)
       assert.are.equal('dep', entry.dep)
     end)
@@ -430,7 +554,7 @@ describe('nvim-bundle', function()
           .. 'return { ok = ok, dep = dep }\n',
         ['dep.lua'] = "return 'dep'\n",
       }
-      local entry = module_value(compile_bundle(root, 'entry'), 'entry')
+      local entry = compile_bundle(root, 'entry')()
       assert.is_true(entry.ok)
       assert.are.equal('dep', entry.dep)
     end)
@@ -441,7 +565,7 @@ describe('nvim-bundle', function()
           .. "return require 'dep'\n",
         ['dep.lua'] = "return 'bundled'\n",
       }
-      assert.are.equal('local-dep', module_value(compile_bundle(root, 'entry'), 'entry'))
+      assert.are.equal('local-dep', compile_bundle(root, 'entry')())
     end)
 
     it('leaves a multi-line require dynamic', function()
@@ -450,9 +574,7 @@ describe('nvim-bundle', function()
         ['dep.lua'] = "return 'bundled'\n",
       }
       package.loaded.dep = 'host-dep'
-      local ok, value = pcall(
-        function() return module_value(compile_bundle(root, 'entry'), 'entry') end
-      )
+      local ok, value = pcall(function() return compile_bundle(root, 'entry')() end)
       package.loaded.dep = nil
       assert.is_true(ok, tostring(value))
       assert.are.equal('host-dep', value)
@@ -463,7 +585,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return { escaped = require 'pkg\\46util', long = require [[pkg.util]] }\n",
         ['pkg/util.lua'] = "return { name = 'util' }\n",
       }
-      local value = module_value(compile_bundle(root, 'entry'), 'entry')
+      local value = compile_bundle(root, 'entry')()
       assert.are.equal('util', value.escaped.name)
       assert.are.equal(value.escaped, value.long)
     end)
@@ -473,15 +595,15 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return require 'dep'\n",
         ['dep.lua'] = 'return ...\n',
       }
-      assert.are.equal('dep', module_value(compile_bundle(root, 'entry'), 'entry'))
+      assert.are.equal('dep', compile_bundle(root, 'entry')())
     end)
 
-    it('returns nil for a module with no return value', function()
+    it('returns true for a module with no return value, as require does', function()
       local root = fixture {
         ['entry.lua'] = "return require 'side_effect'\n",
         ['side_effect.lua'] = 'local value = 1\n',
       }
-      assert.is_nil(module_value(compile_bundle(root, 'entry'), 'entry'))
+      assert.is_true(compile_bundle(root, 'entry')())
     end)
   end)
 
@@ -491,7 +613,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "local dep = require 'dep'\nreturn { dep = dep }\n",
         ['dep.lua'] = "return { name = 'dep' }\n",
       }
-      local registry = compile_bundle(root, 'entry')()
+      local registry = compile_bundle(root)()
 
       assert.are.equal(registry['entry']().dep, registry['dep']())
       assert.are.equal('dep', registry['dep']().name)
@@ -502,22 +624,22 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "return { dep = require 'dep' }\n",
         ['dep.lua'] = "return 'dep'\n",
       }
-      local registry = compile_bundle(root, 'entry')()
+      local registry = compile_bundle(root)()
 
       assert.is_function(registry['entry'])
       assert.is_function(registry['dep'])
       assert.is_nil(registry['bundle_entry_host_probe'])
     end)
 
-    it('returns nil for a bundled module with no return value', function()
+    it('returns true for a bundled module with no return value', function()
       local root = fixture {
         ['entry.lua'] = "return { side = require 'side_effect' }\n",
         ['side_effect.lua'] = 'local value = 1\n',
       }
-      local registry = compile_bundle(root, 'entry')()
+      local registry = compile_bundle(root)()
 
-      assert.is_nil(registry['entry']().side)
-      assert.is_nil(registry['side_effect']())
+      assert.is_true(registry['entry']().side)
+      assert.is_true(registry['side_effect']())
     end)
   end)
 
@@ -548,7 +670,7 @@ describe('nvim-bundle', function()
 
       assert.is_truthy(content:find('__mods._a_b = function', 1, true))
       assert.is_truthy(content:find('__mods._a_b_2 = function', 1, true))
-      local entry = module_value(chunk, 'entry')
+      local entry = chunk()
       assert.are.equal('dotted', entry.dotted)
       assert.are.equal('underscored', entry.underscored)
     end)
@@ -583,7 +705,7 @@ describe('nvim-bundle', function()
       local ok, value = pcall(function()
         local chunk, result = compile_bundle(root, 'entry', { exclude = { 'dep.lua' } })
         assert.are.equal(2, result.modules)
-        return module_value(chunk, 'entry')
+        return chunk()
       end)
       package.loaded.dep = nil
       assert.is_true(ok, tostring(value))
@@ -594,6 +716,7 @@ describe('nvim-bundle', function()
     it('rejects an entry that is excluded', function()
       local root = fixture { ['entry.lua'] = 'return 1\n' }
       run_fail({
+        'build',
         '--root',
         root,
         '--out',
@@ -601,7 +724,7 @@ describe('nvim-bundle', function()
         '--exclude',
         'entry.lua',
         'entry',
-      }, 'entry is excluded or missing from the bundle')
+      }, 'module "entry" is not in the bundle')
     end)
 
     it('rejects an invalid exclude glob', function()
@@ -609,7 +732,7 @@ describe('nvim-bundle', function()
       -- can reach the validation error.
       if pcall(vim.glob.to_lpeg, '[') then return end
       local root = fixture { ['entry.lua'] = 'return 1\n' }
-      run_fail({ '--root', root, '--exclude', '[', 'entry' }, 'invalid --exclude glob')
+      run_fail({ 'build', '--root', root, '--exclude', '[', 'entry' }, 'invalid --exclude glob')
     end)
   end)
 
@@ -617,7 +740,7 @@ describe('nvim-bundle', function()
     it('creates missing output directories', function()
       local root = fixture { ['entry.lua'] = 'return 1\n' }
       local out = root .. '-out/nested/deeper/entry.lua'
-      local result = run_ok { '--root', root, '--out', out, 'entry' }
+      local result = run_ok { 'build', '--root', root, '--out', out, 'entry' }
       assert.are.equal(out, result.out)
       assert.is_truthy(vim.uv.fs_stat(out))
     end)
@@ -625,7 +748,7 @@ describe('nvim-bundle', function()
     it('rejects an output path inside the source root', function()
       local root = fixture { ['entry.lua'] = 'return 1\n' }
       run_fail(
-        { '--root', root, '--out', root .. '/dist/entry.lua', 'entry' },
+        { 'build', '--root', root, '--out', root .. '/dist/entry.lua', 'entry' },
         'must be outside the source root'
       )
     end)
@@ -638,7 +761,7 @@ describe('nvim-bundle', function()
         ['broken.lua'] = 'return {\n',
       }
       run_fail(
-        { '--root', root, '--out', root .. '-out/entry.lua', 'entry' },
+        { 'build', '--root', root, '--out', root .. '-out/entry.lua', 'entry' },
         'syntax error in ' .. root .. '/broken.lua'
       )
     end)
@@ -669,8 +792,7 @@ describe('nvim-bundle', function()
     end
 
     local consumer = table.concat({
-      "local bundle = require 'bundled_lib'",
-      "local lib = bundle['entry']()",
+      "local lib = require 'bundled_lib'",
       '---@type string',
       'local s = lib.util.answer',
       'print(s)',
@@ -693,7 +815,27 @@ describe('nvim-bundle', function()
       assert.is_truthy(output:find('assign-type-mismatch', 1, true), output)
     end)
 
+    it('types a required bundle as its entry, never nil', function()
+      if not can_check_types() then return end
+
+      local root = fixture {
+        ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
+        ['util.lua'] = util,
+      }
+      local _, result = compile_bundle(root, 'entry')
+      local output = check_types(
+        slurp(result.out),
+        "local lib = require 'bundled_lib'\nprint(lib.util.answer + 1)\n"
+      )
+
+      assert.is_nil(output:find('need-check-nil', 1, true), output)
+    end)
+
     it('preserves types through pcall(require, ...)', function()
+      -- emmylua_check 0.25.1 infers a module's type through pcall in only
+      -- about half its runs, with any cache shape and on one thread, so a
+      -- result here would say nothing about the bundle.
+      pending 'emmylua_check is nondeterministic through pcall'
       if not can_check_types() then return end
 
       local root = fixture {
@@ -717,7 +859,7 @@ describe('nvim-bundle', function()
         ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
         ['util.lua'] = util,
       }
-      local _, result = compile_bundle(root, 'entry')
+      local _, result = compile_bundle(root)
       local output = check_types(
         slurp(result.out),
         table.concat({
@@ -731,6 +873,477 @@ describe('nvim-bundle', function()
 
       assert.is_truthy(output:find('consumer.lua', 1, true), output)
       assert.is_truthy(output:find('assign-type-mismatch', 1, true), output)
+    end)
+  end)
+
+  describe('determinism', function()
+    -- Dependencies are built locally and pinned by hash, so the same tree must
+    -- produce the same bytes wherever it is checked out.
+    it('builds identical bytes from two checkouts of the same tree', function()
+      local files = {
+        ['lua/pkg/init.lua'] = 'return require "pkg.a_b" .. require "pkg.a.b"\n',
+        ['lua/pkg/a_b.lua'] = 'return "underscore"\n',
+        ['lua/pkg/a/b.lua'] = 'return "dotted"\n',
+        ['lua/pkg/z/deep/mod.lua'] = 'return 1\n',
+      }
+      local outputs = {}
+      for i = 1, 2 do
+        local checkout = fixture(files)
+        local out = checkout .. '-out/pkg.lua'
+        run_ok { 'build', '--root', checkout .. '/lua', '--out', out, 'pkg' }
+        outputs[i] = slurp(out)
+      end
+
+      assert.are.equal(outputs[1], outputs[2])
+    end)
+  end)
+
+  describe('install', function()
+    it('vendors a dependency built from its tag', function()
+      local dep = remote()
+      local commit = dep.commit({
+        ['lua/dep/init.lua'] = 'return { util = require "dep.util" }\n',
+        ['lua/dep/util.lua'] = 'return "dep-util"\n',
+      }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      install(project, { dep.url .. '@v1.0.0' })
+
+      -- With no entry, the bundle is a registry, as `build` makes, and
+      -- `dep.util` resolves statically although the host cannot see it.
+      local vendored = project .. '/lua/myplug/vendor/dep.lua'
+      assert.are.equal('dep-util', load_bundle(vendored)()['dep']().util)
+      assert.are.same({
+        name = 'myplug',
+        dependencies = { dep = dep.url .. '@v1.0.0' },
+      }, read_json(project .. '/nvim-bundle.json'))
+      assert.are.same({
+        lock_version = 1,
+        dependencies = {
+          dep = {
+            source = dep.url,
+            ref = 'v1.0.0',
+            kind = 'tag',
+            commit = commit,
+            built_with = cli_version(),
+            sha256 = vim.fn.sha256(slurp(vendored)),
+          },
+        },
+      }, read_json(project .. '/nvim-bundle.lock.json'))
+    end)
+
+    it("ignores the dependency's own nvim-bundle.json", function()
+      local dep = remote()
+      dep.commit({
+        ['nvim-bundle.json'] = vim.json.encode {
+          name = 'other',
+          build = { entry = 'dep', bin = true },
+        },
+        ['lua/dep/init.lua'] = 'return "dep"\n',
+      }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v1.0.0' })
+
+      local vendored = project .. '/lua/myplug/vendor/dep.lua'
+      assert.is_nil(slurp(vendored):match '^#!')
+      assert.are.equal('dep', require_vendored(project, 'dep'))
+    end)
+
+    it('expands owner/repo to its GitHub URL', function()
+      -- git rewrites the GitHub URL to a local directory, so the shorthand is
+      -- tested through the same clone a real install runs.
+      local hub = fixture {}
+      local dep = remote(hub .. '/jrop/dep.nvim')
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local env = {
+        GIT_CONFIG_COUNT = '1',
+        GIT_CONFIG_KEY_0 = 'url.file://' .. hub .. '/.insteadOf',
+        GIT_CONFIG_VALUE_0 = 'https://github.com/',
+      }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      install(project, { 'jrop/dep.nvim@v1.0.0' }, env)
+
+      assert.are.equal('dep', require_vendored(project, 'dep'))
+      assert.are.equal(
+        'jrop/dep.nvim@v1.0.0',
+        read_json(project .. '/nvim-bundle.json').dependencies.dep
+      )
+      assert.are.equal(
+        'https://github.com/jrop/dep.nvim',
+        read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.source
+      )
+    end)
+
+    it('resolves a missing tag to the newest stable tag', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.2.0"\n' }, 'v0.2.0')
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.10.0"\n' }, 'v0.10.0')
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.11.0-rc1"\n' }, 'v0.11.0-rc1')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      install(project, { dep.url })
+
+      assert.are.equal('v0.10.0', require_vendored(project, 'dep'))
+      assert.are.equal(
+        dep.url .. '@v0.10.0',
+        read_json(project .. '/nvim-bundle.json').dependencies.dep
+      )
+    end)
+
+    it('follows a branch named after @', function()
+      local dep = remote()
+      local old = dep.commit { ['lua/dep/init.lua'] = 'return "old"\n' }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@main' })
+
+      local locked = read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
+      assert.are.equal('main', locked.ref)
+      assert.are.equal('branch', locked.kind)
+      assert.are.equal(old, locked.commit)
+
+      local new = dep.commit { ['lua/dep/init.lua'] = 'return "new"\n' }
+      local proc = cli { '-C', project, 'update' }
+      assert.are.equal(0, proc.code, proc.stderr)
+
+      assert.are.equal(('updated dep %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)), proc.stdout)
+      assert.are.equal('new', require_vendored(project, 'dep'))
+      assert.are.equal(
+        dep.url .. '@main',
+        read_json(project .. '/nvim-bundle.json').dependencies.dep
+      )
+    end)
+
+    it('pins a full commit SHA named after @', function()
+      local dep = remote()
+      local first = dep.commit { ['lua/dep/init.lua'] = 'return "first"\n' }
+      dep.commit { ['lua/dep/init.lua'] = 'return "second"\n' }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      install(project, { dep.url .. '@' .. first })
+
+      assert.are.equal('first', require_vendored(project, 'dep'))
+      local locked = read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
+      assert.are.equal('rev', locked.kind)
+      assert.are.equal(first, locked.commit)
+      local proc = cli { '-C', project, 'outdated' }
+      assert.are.equal(('dep is pinned to %s\n'):format(first:sub(1, 7)), proc.stdout)
+    end)
+
+    it('prefers the tag when a tag and a branch share a name', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "tag"\n' }, 'same')
+      dep.commit { ['lua/dep/init.lua'] = 'return "branch"\n' }
+      dep.branch 'same'
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      install(project, { dep.url .. '@same' })
+
+      assert.are.equal('tag', require_vendored(project, 'dep'))
+      assert.are.equal('tag', read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.kind)
+    end)
+
+    it('rejects an @ref that is neither a tag nor a branch', function()
+      local dep = remote()
+      dep.commit { ['lua/dep/init.lua'] = 'return "dep"\n' }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      run_fail(
+        { '-C', project, 'install', dep.url .. '@nope' },
+        'nope is neither a tag nor a branch of ' .. dep.url
+      )
+    end)
+
+    it('builds with the entry, root, and excludes given on the command line', function()
+      local dep = remote()
+      local commit = dep.commit({
+        ['src/dep/init.lua'] = 'return { core = require "dep.core" }\n',
+        ['src/dep/core.lua'] = 'return "core"\n',
+        ['src/dep/_test/core_spec.lua'] = 'error "bundled a test"\n',
+      }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+      local proc = cli {
+        '-C',
+        project,
+        'install',
+        dep.url .. '@v1.0.0',
+        'dep.core',
+        '--root',
+        'src',
+        '--exclude',
+        '**/_test/**',
+      }
+      assert.are.equal(0, proc.code, proc.stderr)
+      assert.are.equal('installed dep into lua/myplug/vendor/dep.lua\n', proc.stdout)
+
+      local vendored = project .. '/lua/myplug/vendor/dep.lua'
+      assert.are.equal('core', load_bundle(vendored)())
+      assert.is_nil(slurp(vendored):find('bundled a test', 1, true))
+      local settings = { entry = 'dep.core', root = 'src', exclude = { '**/_test/**' } }
+      assert.are.same(
+        vim.tbl_extend('error', settings, { repo = dep.url, ref = 'v1.0.0' }),
+        read_json(project .. '/nvim-bundle.json').dependencies.dep
+      )
+      assert.are.same(
+        vim.tbl_extend('error', settings, {
+          source = dep.url,
+          ref = 'v1.0.0',
+          kind = 'tag',
+          commit = commit,
+          built_with = cli_version(),
+          sha256 = vim.fn.sha256(slurp(vendored)),
+        }),
+        read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
+      )
+
+      -- The recorded settings rebuild the same bytes from the lock.
+      local bytes = slurp(vendored)
+      os.remove(vendored)
+      install(project, {})
+      assert.are.equal(bytes, slurp(vendored))
+    end)
+
+    it('builds with the settings an object entry records', function()
+      local dep = remote()
+      dep.commit({
+        ['src/dep/init.lua'] = 'return { core = require "dep.core" }\n',
+        ['src/dep/core.lua'] = 'return "core"\n',
+      }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      write_json(project .. '/nvim-bundle.json', {
+        dependencies = {
+          dep = { repo = dep.url, ref = 'v1.0.0', root = 'src', entry = 'dep.core' },
+        },
+      })
+
+      install(project, {})
+
+      assert.are.equal('core', load_bundle(project .. '/lua/myplug/vendor/dep.lua')())
+    end)
+
+    it('refuses to overwrite a vendored file that install did not create', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local project = fixture {
+        ['lua/myplug/init.lua'] = 'return {}\n',
+        ['lua/myplug/vendor/dep.lua'] = 'return "mine"\n',
+      }
+
+      run_fail(
+        { '-C', project, 'install', dep.url .. '@v1.0.0' },
+        'lua/myplug/vendor/dep.lua exists but is not in the lock; move it, pass --as, or pass --force'
+      )
+      assert.are.equal('return "mine"\n', slurp(project .. '/lua/myplug/vendor/dep.lua'))
+    end)
+
+    it('overwrites a vendored file that install did not create under --force', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local project = fixture {
+        ['lua/myplug/init.lua'] = 'return {}\n',
+        ['lua/myplug/vendor/dep.lua'] = 'return "mine"\n',
+      }
+
+      install(project, { dep.url .. '@v1.0.0', '--force' })
+
+      assert.are.equal('dep', require_vendored(project, 'dep'))
+      assert.is_truthy(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep)
+    end)
+  end)
+
+  describe('install without arguments', function()
+    it('rebuilds a missing vendored file from its locked commit', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "original"\n' }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v1.0.0' })
+      local vendored = project .. '/lua/myplug/vendor/dep.lua'
+      local original = slurp(vendored)
+
+      -- Moving the tag must not change what the lock restores.
+      dep.commit({ ['lua/dep/init.lua'] = 'return "moved"\n' }, 'v1.0.0')
+      os.remove(vendored)
+      install(project, {})
+
+      assert.are.equal(original, slurp(vendored))
+    end)
+
+    it('resolves an entry whose manifest tag was edited', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.1.0"\n' }, 'v0.1.0')
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.2.0"\n' }, 'v0.2.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v0.1.0' })
+
+      local manifest = read_json(project .. '/nvim-bundle.json')
+      manifest.dependencies.dep = dep.url .. '@v0.2.0'
+      write_json(project .. '/nvim-bundle.json', manifest)
+      install(project, {})
+
+      assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
+      assert.are.equal(
+        'v0.2.0',
+        read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.ref
+      )
+    end)
+
+    it('needs no network when every vendored file matches the lock', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v1.0.0' })
+      vim.fn.delete((dep.url:gsub('^file://', '')), 'rf')
+
+      local proc = cli { '-C', project, 'install' }
+      assert.are.equal(0, proc.code, proc.stderr)
+      assert.are.equal('dependencies are up to date\n', proc.stdout)
+    end)
+
+    it('fails under --frozen instead of changing anything', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v1.0.0' })
+      install(project, { '--frozen' })
+
+      local vendored = project .. '/lua/myplug/vendor/dep.lua'
+      local f = assert(io.open(vendored, 'wb'))
+      f:write 'return "edited"\n'
+      f:close()
+      local lock = slurp(project .. '/nvim-bundle.lock.json')
+
+      run_fail({ '-C', project, 'install', '--frozen' }, 'would restore dep')
+      assert.are.equal('return "edited"\n', slurp(vendored))
+      assert.are.equal(lock, slurp(project .. '/nvim-bundle.lock.json'))
+    end)
+
+    it('removes a vendored file whose dependency left the manifest', function()
+      local keep, drop = remote(), remote()
+      keep.commit({ ['lua/keep/init.lua'] = 'return "keep"\n' }, 'v1.0.0')
+      drop.commit({ ['lua/drop/init.lua'] = 'return "drop"\n' }, 'v1.0.0')
+      local project = fixture {
+        ['lua/myplug/init.lua'] = 'return {}\n',
+        ['lua/myplug/vendor/handwritten.lua'] = 'return "mine"\n',
+      }
+      install(project, { keep.url .. '@v1.0.0' })
+      install(project, { drop.url .. '@v1.0.0' })
+
+      write_json(project .. '/nvim-bundle.json', {
+        name = 'myplug',
+        dependencies = { keep = keep.url .. '@v1.0.0' },
+      })
+      install(project, {})
+
+      local vendor_dir = project .. '/lua/myplug/vendor/'
+      assert.is_nil(vim.uv.fs_stat(vendor_dir .. 'drop.lua'))
+      assert.is_truthy(vim.uv.fs_stat(vendor_dir .. 'keep.lua'))
+      assert.is_truthy(vim.uv.fs_stat(vendor_dir .. 'handwritten.lua'))
+      assert.are.same(
+        { 'keep' },
+        vim.tbl_keys(read_json(project .. '/nvim-bundle.lock.json').dependencies)
+      )
+    end)
+  end)
+
+  describe('remove', function()
+    it('deletes the vendored file and both entries', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v1.0.0' })
+
+      local proc = cli { '-C', project, 'remove', 'dep' }
+      assert.are.equal(0, proc.code, proc.stderr)
+
+      assert.is_nil(vim.uv.fs_stat(project .. '/lua/myplug/vendor/dep.lua'))
+      assert.is_nil(next(read_json(project .. '/nvim-bundle.json').dependencies))
+      assert.is_nil(next(read_json(project .. '/nvim-bundle.lock.json').dependencies))
+    end)
+
+    it(
+      'rejects an alias that is not a dependency',
+      function() run_fail({ '-C', fixture {}, 'remove', 'nope' }, 'nope is not a dependency') end
+    )
+  end)
+
+  describe('update', function()
+    it('moves a tagged dependency to its newest stable tag', function()
+      local dep = remote()
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.1.0"\n' }, 'v0.1.0')
+      dep.commit({ ['lua/dep/init.lua'] = 'return "v0.2.0"\n' }, 'v0.2.0')
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      install(project, { dep.url .. '@v0.1.0' })
+
+      local proc = cli { '-C', project, 'update' }
+      assert.are.equal(0, proc.code, proc.stderr)
+
+      assert.are.equal('updated dep v0.1.0 -> v0.2.0\n', proc.stdout)
+      assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
+      assert.are.equal(
+        dep.url .. '@v0.2.0',
+        read_json(project .. '/nvim-bundle.json').dependencies.dep
+      )
+    end)
+
+    it('moves a branch to its new head and leaves a rev alone', function()
+      local tracked, pinned = remote(), remote()
+      local old = tracked.commit { ['lua/tracked/init.lua'] = 'return "old"\n' }
+      local rev = pinned.commit { ['lua/pinned/init.lua'] = 'return "pinned"\n' }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      write_json(project .. '/nvim-bundle.json', {
+        dependencies = {
+          tracked = tracked.url .. '@main',
+          pinned = pinned.url .. '@' .. rev,
+        },
+      })
+      install(project, {})
+      local new = tracked.commit { ['lua/tracked/init.lua'] = 'return "new"\n' }
+      pinned.commit { ['lua/pinned/init.lua'] = 'return "later"\n' }
+
+      local proc = cli { '-C', project, 'update' }
+      assert.are.equal(0, proc.code, proc.stderr)
+
+      assert.are.equal(
+        ('updated tracked %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)),
+        proc.stdout
+      )
+      assert.are.equal('new', require_vendored(project, 'tracked'))
+      assert.are.equal('pinned', require_vendored(project, 'pinned'))
+    end)
+  end)
+
+  describe('outdated', function()
+    it('lists newer tags and branch heads without changing anything', function()
+      local tagged, tracked, pinned = remote(), remote(), remote()
+      tagged.commit({ ['lua/tagged/init.lua'] = 'return 1\n' }, 'v0.1.0')
+      tagged.commit({ ['lua/tagged/init.lua'] = 'return 2\n' }, 'v0.2.0')
+      local old = tracked.commit { ['lua/tracked/init.lua'] = 'return 1\n' }
+      local rev = pinned.commit { ['lua/pinned/init.lua'] = 'return 1\n' }
+      local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+      write_json(project .. '/nvim-bundle.json', {
+        dependencies = {
+          tagged = tagged.url .. '@v0.1.0',
+          tracked = tracked.url .. '@main',
+          pinned = pinned.url .. '@' .. rev,
+        },
+      })
+      install(project, {})
+      local new = tracked.commit { ['lua/tracked/init.lua'] = 'return 2\n' }
+      local manifest = slurp(project .. '/nvim-bundle.json')
+
+      local proc = cli { '-C', project, 'outdated' }
+      assert.are.equal(0, proc.code, proc.stderr)
+
+      assert.are.equal(
+        ('pinned is pinned to %s\ntagged v0.1.0 -> v0.2.0\ntracked %s -> %s\n'):format(
+          rev:sub(1, 7),
+          old:sub(1, 7),
+          new:sub(1, 7)
+        ),
+        proc.stdout
+      )
+      assert.are.equal(manifest, slurp(project .. '/nvim-bundle.json'))
     end)
   end)
 end)
