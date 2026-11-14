@@ -34,8 +34,10 @@ run = "nvim --clean -l lua/nvim-bundle/vendor/guard.lua --module nvim-bundle.ven
 
 [tasks.lint]
 depends = ["generate"]
-env.VIMRUNTIME = "{{ tools.neovim.path }}/share/nvim/runtime"
-run = "emmylua_check --warnings-as-errors ."
+run = '''
+export VIMRUNTIME="$(nvim --clean --headless +'lua io.write(vim.env.VIMRUNTIME)' +q)"
+emmylua_check --warnings-as-errors .
+'''
 
 [tasks."test:version"]
 depends = ["test:prepare"]
