@@ -2,6 +2,7 @@
 --- source into one bundle under `lua/<name>/vendor/`, and the manifest and
 --- lock record what was asked for and what it resolved to.
 local build = require 'nvim-bundle.build'
+local dto = require 'nvim-bundle.dto'
 local files = require 'nvim-bundle.files'
 local git = require 'nvim-bundle.git'
 local version = require 'nvim-bundle.version'
@@ -12,31 +13,28 @@ local MANIFEST = 'nvim-bundle.json'
 local LOCK = 'nvim-bundle.lock.json'
 local LOCK_VERSION = 1
 
+-- A diagnostic inside a vendored file cannot be fixed in the consuming
+-- project: the file is generated, and `install` would overwrite an edit. So
+-- every vendored file silences its own diagnostics. Code that calls into it is
+-- still checked against its types, which the comment does not hide.
+local VENDORED_HEADER = '---@diagnostic disable\n'
+
 --- @param msg string
 --- @return never
 local function die(msg) error('nvim-bundle: ' .. msg, 0) end
 
---- What `build` is given for a dependency, named as its CLI arguments are.
---- @class NvimBundle.BuildSettings
---- @field entry? string the module the bundle returns; nil means a registry
---- @field root? string
---- @field exclude? string[]
-
---- One manifest entry: a string `repo[@ref]`, or an object
---- `{ repo, ref, entry, root, exclude }` when it has build settings.
---- @class NvimBundle.Dependency: NvimBundle.BuildSettings
+--- One manifest entry, with the string form split into its repo and ref.
+--- @class nvim-bundle.deps.Dependency: nvim-bundle.dto.BuildSettings
 --- @field repo string as written: a git URL or `owner/repo`
 --- @field url string what git clones
 --- @field ref? string a tag, branch, or commit; nil until the newest tag is chosen
---- @field kind? NvimBundle.RefKind what `ref` names, once resolved
+--- @field kind? nvim-bundle.dto.RefKind what `ref` names, once resolved
 
 --- A dependency whose ref and kind are known, which is what building and
 --- comparing need.
---- @class NvimBundle.Resolved: NvimBundle.Dependency
+--- @class nvim-bundle.deps.Resolved: nvim-bundle.deps.Dependency
 --- @field ref string
---- @field kind NvimBundle.RefKind
-
-local SETTINGS = { 'entry', 'root', 'exclude' }
+--- @field kind nvim-bundle.dto.RefKind
 
 --- `owner/repo` is shorthand for its GitHub URL; anything else is a location
 --- git understands, so it is cloned as written.
@@ -47,10 +45,9 @@ local function clone_url(repo)
   return repo
 end
 
---- @param entry string | table a manifest value
---- @param alias string names the entry in an error
---- @return NvimBundle.Dependency
-local function parse(entry, alias)
+--- @param entry nvim-bundle.dto.ManifestDependency
+--- @return nvim-bundle.deps.Dependency
+local function parse(entry)
   if type(entry) == 'string' then
     -- The ref is an `@` in the last path segment only, because an earlier `@`
     -- belongs to the location (for example `git@host:me/dep.nvim`).
@@ -58,15 +55,6 @@ local function parse(entry, alias)
     local name, ref = segment:match '^(.-)@([^@]+)$'
     local repo = name and entry:sub(1, #entry - #segment) .. name or entry
     return { repo = repo, url = clone_url(repo), ref = ref }
-  end
-
-  if type(entry) ~= 'table' or type(entry.repo) ~= 'string' then
-    die(('dependency %s needs a repo'):format(alias))
-  end
-  for key in pairs(entry) do
-    if not vim.list_contains(SETTINGS, key) and key ~= 'repo' and key ~= 'ref' then
-      die(('dependency %s has an unknown field %s'):format(alias, key))
-    end
   end
   return {
     repo = entry.repo,
@@ -78,25 +66,28 @@ local function parse(entry, alias)
   }
 end
 
---- @param dep NvimBundle.Dependency
---- @return NvimBundle.BuildSettings
+--- @param dep nvim-bundle.deps.Dependency | nvim-bundle.dto.LockEntry
+--- @return nvim-bundle.dto.BuildSettings
 local function settings(dep) return { entry = dep.entry, root = dep.root, exclude = dep.exclude } end
 
---- @param dep NvimBundle.Dependency
---- @return string | table
+--- @param dep nvim-bundle.deps.Dependency
+--- @return nvim-bundle.dto.ManifestDependency
 local function manifest_entry(dep)
-  local fields = settings(dep)
-  if next(fields) then
-    return vim.tbl_extend('error', fields, { repo = dep.repo, ref = dep.ref })
-  end
-  return dep.repo .. (dep.ref and '@' .. dep.ref or '')
+  if not next(settings(dep)) then return dep.repo .. (dep.ref and '@' .. dep.ref or '') end
+  return {
+    repo = dep.repo,
+    ref = dep.ref,
+    entry = dep.entry,
+    root = dep.root,
+    exclude = dep.exclude,
+  }
 end
 
 --- A lock entry still describes a dependency when it records the same source,
 --- ref, and build settings. A dependency with no ref pins nothing yet, so it never
 --- matches.
---- @param dep NvimBundle.Dependency
---- @param entry table
+--- @param dep nvim-bundle.deps.Dependency
+--- @param entry nvim-bundle.dto.LockEntry
 --- @return boolean
 local function locked(dep, entry)
   return dep.ref ~= nil
@@ -108,12 +99,12 @@ end
 --- Fill in what `dep.ref` names. A locked dependency takes its kind from the
 --- lock, so only a new or changed ref asks the remote, and a dependency with
 --- no ref gets the newest stable tag.
---- @param dep NvimBundle.Dependency
---- @param entry table? the lock entry
---- @return NvimBundle.Resolved
+--- @param dep nvim-bundle.deps.Dependency
+--- @param entry nvim-bundle.dto.LockEntry? the lock entry
+--- @return nvim-bundle.deps.Resolved
 local function resolve(dep, entry)
   if dep.kind then
-    return dep --[[@as NvimBundle.Resolved]]
+    return dep --[[@as nvim-bundle.deps.Resolved]]
   end
   if entry and locked(dep, entry) then
     dep.kind = entry.kind
@@ -122,7 +113,7 @@ local function resolve(dep, entry)
   else
     dep.ref, dep.kind = git.latest_tag(dep.url), 'tag'
   end
-  return dep --[[@as NvimBundle.Resolved]]
+  return dep --[[@as nvim-bundle.deps.Resolved]]
 end
 
 --- Commands walk dependencies in sorted order, so their output and the order
@@ -138,10 +129,11 @@ end
 --- Check out `ref` and build it exactly as `nvim-bundle build` would in that
 --- checkout, with the consumer's settings as its arguments. The dependency's
 --- own `nvim-bundle.json` is never read, so any Lua repository can be
---- vendored. Returns the bundle, the alias (`alias`, else the entry's package,
---- else the root's one package), and the commit that was built.
---- @param dep NvimBundle.Dependency
---- @param kind NvimBundle.RefKind
+--- vendored. Returns the vendored file's content, the alias (`alias`, else the
+--- entry's package, else the root's one package), and the commit that was
+--- built.
+--- @param dep nvim-bundle.deps.Dependency
+--- @param kind nvim-bundle.dto.RefKind
 --- @param ref string
 --- @param alias string?
 --- @return string content, string alias, string commit
@@ -157,8 +149,8 @@ local function build_from_source(dep, kind, ref, alias)
       or dep.entry and dep.entry:match '^[^.]+'
       or build.package_name(root, 'pass an entry or --as')
     -- build either wrote `out` or raised, so the file is there to read.
-    local content = files.read(out) --[[@as string]]
-    return { content = content, alias = name, commit = commit }
+    local bundle = files.read(out) --[[@as string]]
+    return { content = VENDORED_HEADER .. bundle, alias = name, commit = commit }
   end)
   vim.fn.delete(checkout, 'rf')
   vim.fn.delete(out)
@@ -166,28 +158,28 @@ local function build_from_source(dep, kind, ref, alias)
   return built.content, built.alias, built.commit
 end
 
---- @class NvimBundle.Project
+--- @class nvim-bundle.deps.Project
 --- @field name? string inferred on first use, so commands that fail early never need it
---- @field manifest table
---- @field lock table
+--- @field manifest nvim-bundle.dto.Manifest
+--- @field lock nvim-bundle.dto.Lock
 
---- @return NvimBundle.Project
+--- A project with neither file is valid: `install` creates both. The absent
+--- values still go through the schemas, so their defaults come from one place.
+--- @return nvim-bundle.deps.Project
 local function load_project()
-  local config = files.read_json(MANIFEST) or {}
-  local lock = files.read_json(LOCK) or {}
-  config.dependencies = config.dependencies or {}
-  lock.dependencies = lock.dependencies or {}
-  return { name = config.name, manifest = config, lock = lock }
+  local manifest = dto.check(dto.Manifest, files.read_json(MANIFEST) or {}, MANIFEST) --[[@as nvim-bundle.dto.Manifest]]
+  local lock = dto.check(dto.Lock, files.read_json(LOCK) or { lock_version = LOCK_VERSION }, LOCK) --[[@as nvim-bundle.dto.Lock]]
+  return { name = manifest.name, manifest = manifest, lock = lock }
 end
 
---- @param project NvimBundle.Project
+--- @param project nvim-bundle.deps.Project
 --- @return string
 local function project_name(project)
   project.name = project.name or build.package_name('lua', ('add "name" to %s'):format(MANIFEST))
   return project.name
 end
 
---- @param project NvimBundle.Project
+--- @param project nvim-bundle.deps.Project
 local function save_project(project)
   project.manifest.name = project_name(project)
   project.lock.lock_version = LOCK_VERSION
@@ -195,7 +187,7 @@ local function save_project(project)
   files.write_json(LOCK, project.lock)
 end
 
---- @param project NvimBundle.Project
+--- @param project nvim-bundle.deps.Project
 --- @param alias string
 --- @return string
 local function vendored_path(project, alias)
@@ -205,8 +197,8 @@ end
 --- Resolve and build `dep`, and record the result in both files. A file the
 --- lock does not know was not vendored by install, so it is only replaced
 --- under `force`.
---- @param project NvimBundle.Project
---- @param dep NvimBundle.Dependency
+--- @param project nvim-bundle.deps.Project
+--- @param dep nvim-bundle.deps.Dependency
 --- @param alias string? overrides the package name as the file name
 --- @param force boolean?
 --- @return string alias, string path
@@ -222,23 +214,26 @@ local function add(project, dep, alias, force)
   files.write(path, content)
 
   project.manifest.dependencies[alias] = manifest_entry(dep)
-  project.lock.dependencies[alias] = vim.tbl_extend('error', settings(dep), {
+  project.lock.dependencies[alias] = {
     source = dep.url,
-    ref = dep.ref,
-    kind = dep.kind,
+    ref = resolved.ref,
+    kind = resolved.kind,
     commit = commit,
     built_with = version,
     sha256 = vim.fn.sha256(content),
-  })
+    entry = dep.entry,
+    root = dep.root,
+    exclude = dep.exclude,
+  }
   return alias, path
 end
 
 --- Rebuild the locked commit, not the ref, so a moved tag or an advanced
 --- branch cannot change what is restored. The bytes only match under the
 --- nvim-bundle version that built them, so a mismatch names both versions.
---- @param dep NvimBundle.Dependency
+--- @param dep nvim-bundle.deps.Dependency
 --- @param alias string
---- @param entry table
+--- @param entry nvim-bundle.dto.LockEntry
 --- @param path string
 local function restore(dep, alias, entry, path)
   local content = build_from_source(dep, 'rev', entry.commit, alias)
@@ -252,16 +247,16 @@ local function restore(dep, alias, entry, path)
   files.write(path, content)
 end
 
---- @class NvimBundle.InstallOptions: NvimBundle.BuildSettings
+--- @class nvim-bundle.deps.InstallOptions: nvim-bundle.dto.BuildSettings
 --- @field as? string overrides the package name as the file name
 --- @field force? boolean overwrite a file that install did not create
 
 --- @param spec string `repo[@ref]`
---- @param opts NvimBundle.InstallOptions
+--- @param opts nvim-bundle.deps.InstallOptions
 --- @return string alias, string path
 function M.install(spec, opts)
   local project = load_project()
-  local dep = parse(spec, spec)
+  local dep = parse(spec)
   dep.entry, dep.root, dep.exclude = opts.entry, opts.root, opts.exclude
   local alias, path = add(project, dep, opts.as, opts.force)
   save_project(project)
@@ -285,8 +280,8 @@ local function short(commit) return commit and commit:sub(1, 7) or '(unlocked)' 
 --- Where `update` would move a resolved dependency, or nil when it is current
 --- or a rev. A tag moves to the newest stable tag, and a branch to its remote
 --- head, compared with the locked commit.
---- @param dep NvimBundle.Resolved
---- @param entry table? the lock entry
+--- @param dep nvim-bundle.deps.Resolved
+--- @param entry nvim-bundle.dto.LockEntry? the lock entry
 --- @return { from: string, to: string, ref: string }?
 local function newer(dep, entry)
   if dep.kind == 'rev' then return nil end
@@ -313,7 +308,7 @@ function M.update(alias)
   local changes = {}
   for _, name in ipairs(alias and { alias } or sorted_keys(deps)) do
     local entry = project.lock.dependencies[name]
-    local dep = resolve(parse(deps[name], name), entry)
+    local dep = resolve(parse(deps[name]), entry)
     local move = newer(dep, entry)
     if move then
       dep.ref = move.ref
@@ -335,7 +330,7 @@ function M.outdated()
   local lines = {}
   for _, alias in ipairs(sorted_keys(deps)) do
     local entry = project.lock.dependencies[alias]
-    local dep = resolve(parse(deps[alias], alias), entry)
+    local dep = resolve(parse(deps[alias]), entry)
     local move = newer(dep, entry)
     if dep.kind == 'rev' then
       lines[#lines + 1] = ('%s is pinned to %s'):format(alias, short(dep.ref))
@@ -346,18 +341,18 @@ function M.outdated()
   return lines
 end
 
---- @alias NvimBundle.SyncAction 'resolve' | 'restore' | 'remove'
+--- @alias nvim-bundle.deps.SyncAction 'resolve' | 'restore' | 'remove'
 
 --- Decide what each dependency needs before touching anything, so a frozen
 --- run can report the whole plan and leave every file as it was.
---- @param project NvimBundle.Project
---- @return { action: NvimBundle.SyncAction, alias: string }[]
+--- @param project nvim-bundle.deps.Project
+--- @return { action: nvim-bundle.deps.SyncAction, alias: string }[]
 local function plan_sync(project)
   local plan = {}
   for _, alias in ipairs(sorted_keys(project.manifest.dependencies)) do
     local entry = project.lock.dependencies[alias]
     local current = files.read(vendored_path(project, alias))
-    if not entry or not locked(parse(project.manifest.dependencies[alias], alias), entry) then
+    if not entry or not locked(parse(project.manifest.dependencies[alias]), entry) then
       plan[#plan + 1] = { action = 'resolve', alias = alias }
     elseif not current or vim.fn.sha256(current) ~= entry.sha256 then
       plan[#plan + 1] = { action = 'restore', alias = alias }
@@ -374,12 +369,12 @@ local function plan_sync(project)
   return plan
 end
 
---- @class NvimBundle.SyncOptions
+--- @class nvim-bundle.deps.SyncOptions
 --- @field frozen? boolean fail instead of changing anything
 
 --- Make `vendor/` match the manifest, using the lock wherever it still
 --- applies. Returns one line per dependency that changed.
---- @param opts NvimBundle.SyncOptions?
+--- @param opts nvim-bundle.deps.SyncOptions?
 --- @return string[]
 function M.sync(opts)
   local project = load_project()
@@ -401,7 +396,7 @@ function M.sync(opts)
       os.remove(path)
       project.lock.dependencies[alias] = nil
     else
-      local dep = parse(project.manifest.dependencies[alias], alias)
+      local dep = parse(project.manifest.dependencies[alias])
       if step.action == 'resolve' then
         add(project, dep, alias)
       else

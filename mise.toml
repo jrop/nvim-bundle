@@ -30,7 +30,6 @@ _.source = { path = "./scripts/env.sh", tools = true }
 ################################################################################
 
 [tasks]
-lint = "emmylua_check --warnings-as-errors --ignore '.prefix/**/*.*' ."
 fmt = "stylua ."
 "fmt:check" = "stylua --check ."
 "test:prepare" = '''
@@ -57,6 +56,20 @@ else
 fi
 echo
 '''
+
+# The schemas are the source of truth for the DTO types, so the generated file
+# is a build artifact and git-ignored. mise skips the task while the output is
+# newer than every source, because guard's output is not byte-stable across
+# runs and cannot be compared by content:
+[tasks.generate]
+description = "Generate LuaCATS types from the guard schemas"
+sources = ["lua/nvim-bundle/dto.lua", "lua/nvim-bundle/vendor/guard.lua"]
+outputs = ["lua/nvim-bundle/dto.types.lua"]
+run = "nvim --clean -l lua/nvim-bundle/vendor/guard.lua --module nvim-bundle.vendor.guard lua/nvim-bundle/dto.lua"
+
+[tasks.lint]
+depends = ["generate"]
+run = "emmylua_check --warnings-as-errors --ignore '.prefix/**/*.*' ."
 
 [tasks."test:version:no-prep"]
 hide = true
@@ -133,16 +146,12 @@ mise run ci
 
 # Build with the checkout's own bundler. --bin adds the shebang, the modeline,
 # and the executable bit, and inlines the vendored parser. The output name has
-# no .lua extension because it is published as a command.
+# no .lua extension because it is published as a command. The generated types
+# are annotations only, so they stay out of the bundle. --define replaces the
+# version that lua/nvim-bundle/version.lua reads, so the asset names this tag.
 nvim --clean -l lua/nvim-bundle.lua \
-  build --bin --root lua --out dist/nvim-bundle nvim-bundle
-
-# The bundler copies module source verbatim, so stamping after the build is
-# equivalent to stamping a source copy, without the copy or its temp path in
-# the generated header.
-sed "s/^local VERSION = '.*'$/local VERSION = '${tag#v}'/" dist/nvim-bundle > dist/nvim-bundle.new
-mv dist/nvim-bundle.new dist/nvim-bundle
-chmod +x dist/nvim-bundle
+  build --bin --root lua --out dist/nvim-bundle --exclude '**/*.types.lua' \
+  --define "vim.g.nvim_bundle_version='${tag#v}'" nvim-bundle
 
 # Only the bundle has the shebang and the inlined parser, so check those.
 ./dist/nvim-bundle --version | grep -q "^nvim-bundle ${tag#v} (Neovim "

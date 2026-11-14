@@ -6,8 +6,17 @@
       "entry": "args",
       "kind": "tag",
       "ref": "v0.1.0",
-      "sha256": "10623c7d28fb77392402eb6487bd8e452155bc12ba50f9ffc6d3791d13a6b3a3",
+      "sha256": "b661c9d202d94c5ac8a284ead7323c8c52fe41aa090f7fba32b0450e7cc7e4a2",
       "source": "https://github.com/jrop/args.nvim"
+    },
+    "guard": {
+      "built_with": "0.1.0",
+      "commit": "49cb0e717b4a78d1b20f55bfe6e9ff4310bacd90",
+      "entry": "guard",
+      "kind": "tag",
+      "ref": "v0.1.0",
+      "sha256": "aa197002153635600ae0527480d0cd13fbfea5ba8655ac888f7071022ff56273",
+      "source": "https://github.com/jrop/guard.nvim"
     }
   },
   "lock_version": 1

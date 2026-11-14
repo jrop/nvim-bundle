@@ -1,6 +1,6 @@
 return {
   _all = {
-    lpath = "lua/?.lua;lua/?/init.lua",
+    lpath = "lua/?.lua;lua/?/init.lua;./?.lua",
     lua = "nvim --clean -l",
   },
   default = {

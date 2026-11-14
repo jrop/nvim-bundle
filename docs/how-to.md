@@ -155,6 +155,35 @@ nvim-bundle build myplugin \
 Patterns match both the path from the current directory and the path relative
 to the source root, so `lua/vendor/**` and `vendor/**` select the same files.
 
+## Set build-time values
+
+Read a setting through a name that is safe when nothing defines it, and define
+it when you build. `vim.g` suits this, because an unset key reads as `nil`:
+
+```lua
+-- lua/myplugin/env.lua
+return vim.g.myplugin_env or 'development'
+```
+
+```sh
+nvim-bundle build myplugin --define 'vim.g.myplugin_env="production"'
+```
+
+The source keeps working unbundled, where the module returns `'development'`,
+and the bundle contains `return "production" or 'development'`. A branch on a
+defined value is removed from the bundle when it can never run:
+
+```lua
+if vim.g.myplugin_env == 'production' then
+  -- kept, as a `do ... end` block
+else
+  -- removed from the bundle
+end
+```
+ The value is
+Lua code, so a string needs its own quotes. See
+[Defines](reference.md#defines) for every rule.
+
 ## Use the bundler from Lua
 
 When the repository's `lua/` directory is on `package.path`, require the module
@@ -268,7 +297,8 @@ Run the checks:
 | ------------------------ | ---------------------------------------------------------- |
 | `mise run fmt`           | Format Lua sources with stylua.                            |
 | `mise run fmt:check`     | Check formatting without changing files.                   |
-| `mise run lint`          | Type-check with `emmylua_check`; warnings are errors.      |
+| `mise run generate`      | Generate `dto.types.lua` when `dto.lua` is newer.          |
+| `mise run lint`          | Generate types, then type-check; warnings are errors.      |
 | `mise run test`          | Run the busted suite against Neovim 0.12.6.                |
 | `mise run test:all`      | Run the suite against 0.10.4, 0.11.7, 0.12.6, and nightly. |
 | `mise run test:coverage` | Run the suite with luacov.                                 |
@@ -279,7 +309,7 @@ Run a single spec file after preparing the test dependencies:
 ```sh
 mise run test:prepare
 eval $(nvimv env 0.12.6)
-busted spec/nvim-bundle_spec.lua
+busted spec/define_spec.lua
 ```
 
 ## Publish a release
@@ -294,11 +324,12 @@ git push origin v0.1.0
 mise run release
 ```
 
-The task runs `mise run ci`, bundles `lua/` into `dist/nvim-bundle` with
-`--bin`, and stamps the tag into the built file. The self-bundle inlines the
-vendored argument parser, so the extensionless `nvim-bundle` asset stays a
-single file while also being executable, and its `--version` names the release
-even though a checkout reports the `VERSION` constant in `lua/nvim-bundle/version.lua`.
+The task runs `mise run ci` and bundles `lua/` into `dist/nvim-bundle` with
+`--bin`. It passes `--define "vim.g.nvim_bundle_version='<tag>'"`, so the
+asset's `--version` names the release, while a checkout reports the fallback in
+`lua/nvim-bundle/version.lua`. The self-bundle inlines the vendored argument
+parser, so the extensionless `nvim-bundle` asset stays a single file while also
+being executable.
 The task writes `nvim-bundle.sha256` and creates the GitHub release. It refuses
 to publish when `HEAD` is not tagged, the tree is dirty, or the remote tag does
 not exist.

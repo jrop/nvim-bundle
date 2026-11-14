@@ -69,13 +69,15 @@ local function encode(value, indent)
   return '{\n' .. table.concat(parts, ',\n') .. '\n' .. indent .. '}'
 end
 
+--- Decode only; the caller validates the shape. `null` decodes as nil rather
+--- than `vim.NIL`, because `vim.NIL` is truthy and would pass for a value.
 --- @param path string
---- @return table?
+--- @return unknown? nil when the file does not exist
 function M.read_json(path)
   local content = M.read(path)
   if not content then return nil end
-  local ok, value = pcall(vim.json.decode, content)
-  if not ok or type(value) ~= 'table' then die(('%s is not a JSON object'):format(path)) end
+  local ok, value = pcall(vim.json.decode, content, { luanil = { object = true, array = true } })
+  if not ok then die(('%s is not valid JSON: %s'):format(path, value)) end
   return value
 end
 

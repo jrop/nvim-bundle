@@ -1,8 +1,10 @@
---- The bundler core: discover a source tree, map files to module ids, rewrite
---- static requires, and emit one bundle. It lives apart from the CLI so that
+--- The bundler core: discover a source tree, map files to module ids, run the
+--- source transforms, and emit one bundle. It lives apart from the CLI so that
 --- `install` can build dependencies without requiring the CLI module, which is
 --- still loading while it runs a command.
+local dto = require 'nvim-bundle.dto'
 local files = require 'nvim-bundle.files'
+local transform = require 'nvim-bundle.transform'
 
 local M = {}
 
@@ -12,14 +14,7 @@ local function path_exists(path) return vim.uv.fs_stat(path) ~= nil end
 --- @return never
 local function die(msg) error('nvim-bundle: ' .. msg, 0) end
 
---- @class NvimBundle.BuildOptions
---- @field entry? string the module the bundle returns; nil returns the registry
---- @field root? string
---- @field out? string
---- @field exclude? string[]
---- @field bin? boolean
-
---- @class NvimBundle.BuildResult
+--- @class nvim-bundle.build.BuildResult
 --- @field out string
 --- @field entry? string the returned module id, or nil for a registry
 --- @field modules integer
@@ -108,218 +103,6 @@ local function read_source(path)
   return src
 end
 
---- @class NvimBundle.Queries
---- @field require_calls vim.treesitter.Query
---- @field protected_calls vim.treesitter.Query
---- @field identifiers vim.treesitter.Query
-
---- Parsed once per build, after the parser check, and passed to every module
---- rewrite.
---- @return NvimBundle.Queries
-local function parse_queries()
-  return {
-    require_calls = vim.treesitter.query.parse(
-      'lua',
-      [[
-        ((function_call
-          name: (identifier) @fn
-          arguments: (arguments
-            (string) @module) @args) @call
-         (#eq? @fn "require"))
-      ]]
-    ),
-    protected_calls = vim.treesitter.query.parse(
-      'lua',
-      [[
-        ((function_call
-          name: (identifier) @fn
-          arguments: (arguments) @args) @call
-         (#any-of? @fn "pcall" "xpcall"))
-      ]]
-    ),
-    identifiers = vim.treesitter.query.parse(
-      'lua',
-      [[
-        ((identifier) @id
-         (#any-of? @id "require" "pcall" "xpcall"))
-      ]]
-    ),
-  }
-end
-
---- Neovim 0.12 returns each capture as a list of nodes, while 0.10 returns
---- the node directly. Our queries capture one node per name, so the first
---- element is the node in both shapes.
---- @param value TSNode|TSNode[]
---- @return TSNode?
-local function capture_node(value)
-  if type(value) == 'table' then return value[1] end
-  return value
-end
-
---- Name -> node map for one query match, normalized across Neovim versions.
---- @param query vim.treesitter.Query
---- @param match table<integer, TSNode|TSNode[]>
---- @return table<string, TSNode?>
-local function captures(query, match)
-  local result = {}
-  for capture, value in pairs(match) do
-    result[query.captures[capture]] = capture_node(value)
-  end
-  return result
-end
-
---- A `require`, `pcall`, or `xpcall` identifier is safe to leave in place only
---- when it refers to the global function. Any other position means the module
---- binds or aliases the name, so the module keeps all of its requires dynamic.
---- @param node TSNode
---- @param text string
---- @param src string
---- @return boolean
-local function is_allowed_global(node, text, src)
-  local parent = node:parent()
-  if not parent then return false end
-
-  if parent:type() == 'function_call' then
-    local name = parent:field('name')[1]
-    if name and name:equal(node) then return true end
-  end
-
-  if text ~= 'require' or parent:type() ~= 'arguments' then return false end
-
-  local call = parent:parent()
-  if not call or call:type() ~= 'function_call' then return false end
-
-  local name = call:field('name')[1]
-  if not name or name:type() ~= 'identifier' then return false end
-
-  local name_text = vim.treesitter.get_node_text(name, src)
-  if name_text ~= 'pcall' and name_text ~= 'xpcall' then return false end
-
-  local first = parent:named_child(0)
-  return first ~= nil and first:equal(node)
-end
-
---- @param root TSNode
---- @param src string
---- @param queries NvimBundle.Queries
---- @return boolean
-local function shadows_globals(root, src, queries)
-  for _, match in queries.identifiers:iter_matches(root, src) do
-    for _, value in pairs(match) do
-      local node = capture_node(value)
-      if node and not is_allowed_global(node, vim.treesitter.get_node_text(node, src), src) then
-        return true
-      end
-    end
-  end
-  return false
-end
-
---- @param node TSNode
---- @param src string
---- @return string?
-local function eval_string(node, src)
-  local raw = vim.treesitter.get_node_text(node, src)
-  -- The node is a string literal, so evaluating it cannot run user code.
-  local chunk = loadstring('return ' .. raw)
-  if not chunk then return nil end
-  local ok, value = pcall(chunk)
-  if not ok or type(value) ~= 'string' then return nil end
-  return value
-end
-
---- @param src string
---- @param fields table<string, string>
---- @param queries NvimBundle.Queries
---- @return string
-local function rewrite_requires(src, fields, queries)
-  local ok_parser, parser = pcall(vim.treesitter.get_string_parser, src, 'lua')
-  if not ok_parser then return src end
-
-  local trees = parser:parse()
-  local tree = trees and trees[1]
-  if not tree then return src end
-
-  local root = tree:root()
-  if root:has_error() then return src end
-  if shadows_globals(root, src, queries) then return src end
-
-  local replacements = {}
-  local function replace(node, text)
-    local _, _, start_byte, _, _, end_byte = node:range(true)
-    replacements[#replacements + 1] = {
-      start_byte = start_byte,
-      end_byte = end_byte,
-      text = text,
-    }
-  end
-
-  --- @param match table<integer, TSNode|TSNode[]>
-  local function rewrite_require_call(match)
-    local captured = captures(queries.require_calls, match)
-    local args = captured.args
-    local module_node = captured.module
-    local call = captured.call
-    if not args or not module_node or not call then return end
-    if args:named_child_count() ~= 1 then return end
-
-    local module = eval_string(module_node, src)
-    local field = module and fields[module]
-    if not field then return end
-
-    -- Replacing a multi-line call with a one-line call would shift the
-    -- generated file's line numbers, so those calls keep using host require.
-    local start_row, _, _, end_row = call:range(true)
-    if start_row ~= end_row then return end
-
-    replace(call, ('__mods.%s(%q)'):format(field, module))
-  end
-
-  --- @param match table<integer, TSNode|TSNode[]>
-  local function rewrite_protected_call(match)
-    local captured = captures(queries.protected_calls, match)
-    local args = captured.args
-    local name = captured.fn
-    if not args or not name then return end
-
-    local name_text = vim.treesitter.get_node_text(name, src)
-    local first = args:named_child(0)
-    if not first or first:type() ~= 'identifier' then return end
-    if vim.treesitter.get_node_text(first, src) ~= 'require' then return end
-
-    local module_index = name_text == 'pcall' and 1 or 2
-    if args:named_child_count() <= module_index then return end
-
-    local module_node = args:named_child(module_index)
-    if not module_node or module_node:type() ~= 'string' then return end
-
-    local module = eval_string(module_node, src)
-    local field = module and fields[module]
-    if not field then return end
-
-    -- pcall/xpcall infer a type from an anonymous function more reliably than
-    -- from a table-field function, so forward the arguments through one.
-    replace(first, ('function(...) return __mods.%s(...) end'):format(field))
-  end
-
-  for _, match in queries.require_calls:iter_matches(root, src) do
-    rewrite_require_call(match)
-  end
-
-  for _, match in queries.protected_calls:iter_matches(root, src) do
-    rewrite_protected_call(match)
-  end
-
-  table.sort(replacements, function(a, b) return a.start_byte > b.start_byte end)
-  for _, replacement in ipairs(replacements) do
-    src = src:sub(1, replacement.start_byte)
-      .. replacement.text
-      .. src:sub(replacement.end_byte + 1)
-  end
-  return src
-end
-
 --- Turn a module id into a valid, readable Lua field name. For example,
 --- `myplugin.util` becomes `_myplugin_util`. The leading underscore keeps
 --- keywords, leading digits, and the empty name valid. Distinct ids can
@@ -346,15 +129,18 @@ end
 --- @param ids table<string, string>
 --- @param entry_id string? the returned module, or nil for a registry
 --- @param bin boolean?
---- @param queries NvimBundle.Queries
+--- @param define table<string, string>
 --- @return string
-local function generate(sources, ids, entry_id, bin, queries)
+local function generate(sources, ids, entry_id, bin, define)
   local fields_by_id = {}
   local taken = {}
   for _, file in ipairs(sources) do
     local id = ids[file.path]
     fields_by_id[id] = field_name(id, taken)
   end
+
+  --- @type nvim-bundle.transform.Build
+  local build = { fields_by_id = fields_by_id, define = define }
 
   local out = {}
   local function emit(line) out[#out + 1] = line end
@@ -392,13 +178,23 @@ local function generate(sources, ids, entry_id, bin, queries)
   for _, file in ipairs(sources) do
     local id = ids[file.path]
     local field = fields_by_id[id]
-    local src = rewrite_requires(read_source(file.path), fields_by_id, queries)
+    local src = transform.run(read_source(file.path), file.path, build)
 
     -- The function value never changes, so pcall/xpcall can infer the
     -- module's return type through it.
     emit ''
     emit(('__mods.%s = function(...)'):format(field))
     emit(('  return __load(%q, function(...)'):format(id))
+    -- Every module shares the bundle's source path, so a library's main guard
+    -- (its source compared with `arg[0]`) would pass when the bundle runs. Only
+    -- the entry can be the script, so every other module sees `arg` as plain
+    -- plugin code in Neovim does: an empty table. The local shadows the global
+    -- lexically, which also covers a check made after loading and every module
+    -- of a nested bundle.
+    if id ~= entry_id then
+      emit '---@type string[]'
+      emit 'local arg = {}'
+    end
     emit(src)
     emit '  end, ...)'
     emit 'end'
@@ -425,9 +221,13 @@ local function generate(sources, ids, entry_id, bin, queries)
   return table.concat(out, '\n')
 end
 
---- @param opts NvimBundle.BuildOptions
---- @return NvimBundle.BuildResult
+--- `opts.entry` is the module the bundle returns; without one, the bundle
+--- returns a registry. The options are validated because this is the public
+--- Lua API, so a caller's typo must fail rather than be ignored.
+--- @param opts nvim-bundle.dto.BuildOptions
+--- @return nvim-bundle.build.BuildResult
 function M.build(opts)
+  opts = dto.check(dto.BuildOptions, opts, 'build options') --[[@as nvim-bundle.dto.BuildOptions]]
   local root = (opts.root or 'lua'):gsub('/+$', '')
   if not path_exists(root) then die('source root not found: ' .. root) end
   if opts.bin and not opts.entry then
@@ -479,7 +279,7 @@ function M.build(opts)
   end)
   if not has_parser then die 'Neovim Lua parser is required for static require resolution' end
 
-  local content = generate(sources, ids, opts.entry, opts.bin, parse_queries())
+  local content = generate(sources, ids, opts.entry, opts.bin, opts.define or {})
   local chunk, err = loadstring(content, '@' .. out)
   if not chunk then die('generated bundle has a syntax error: ' .. err) end
   files.write(out, content)

@@ -42,14 +42,12 @@ function M.branch_head(url, branch)
   return commit
 end
 
---- @alias NvimBundle.RefKind 'tag' | 'branch' | 'rev'
-
 --- Name the kind of `ref`. A full commit SHA (40 or 64 hex digits) is a rev
 --- without asking the remote. Otherwise a tag wins over a branch of the same
 --- name, as it does in git.
 --- @param url string
 --- @param ref string
---- @return NvimBundle.RefKind
+--- @return nvim-bundle.dto.RefKind
 function M.ref_kind(url, ref)
   if (#ref == 40 or #ref == 64) and ref:match '^%x+$' then return 'rev' end
   local tag, branch = 'refs/tags/' .. ref, 'refs/heads/' .. ref
@@ -68,7 +66,7 @@ end
 --- `clone --branch` picks the branch when a tag shares its name. A rev may be
 --- any commit, so it needs the full history.
 --- @param url string
---- @param kind NvimBundle.RefKind
+--- @param kind nvim-bundle.dto.RefKind
 --- @param ref string
 --- @param dir string
 --- @return string commit

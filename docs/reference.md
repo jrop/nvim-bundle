@@ -46,6 +46,8 @@ Options:
                      dist/<package>.lua for a registry)
   --exclude <glob>   Skip paths matching <glob> (repeatable)
   --bin              Make an executable (needs <entry>)
+  --define <k>=<v>   Replace each read of the global name or dotted path <k>
+                     with the Lua expression <v> (repeatable)
   -h, --help         Show this help
 ```
 
@@ -71,7 +73,62 @@ demo)` or `(registry)`.
 | `--out <file>`     | Changes the generated file.                                       |
 | `--exclude <glob>` | Skips matching files. Repeat the option to add more globs.        |
 | `--bin`            | Adds a shebang and a modeline, and makes the file executable.     |
+| `--define <k>=<v>` | Replaces reads of `<k>` with `<v>`; see [Defines](#defines).      |
 | `-h`, `--help`     | Prints the `build` usage without bundling anything.               |
+
+#### Defines
+
+`--define <key>=<value>` replaces every read of `<key>` in every bundled
+module, vendored bundles included, with `<value>`:
+
+```sh
+nvim-bundle build myplugin --define '__DEV__=false' --define 'vim.g.myplugin_env="production"'
+```
+
+- `<key>` is a global name or a dotted path of plain names, such as `__DEV__`
+  or `vim.g.myplugin_env`. It cannot start with `require`, `pcall`, or
+  `xpcall`.
+- `<value>` is one Lua expression on one line, written as it should appear,
+  so a string needs its own quotes. The option splits on the first `=`, so a
+  value may contain `=`.
+- A read means the key as an expression. Strings, comments, table keys such as
+  `{ k = 1 }`, and field names such as `t.k` are left alone.
+- When two keys match, the longer one wins: with `vim.g` and `vim.g.x` both
+  defined, `vim.g.x` is replaced whole.
+- A value that is indexed or called is wrapped in parentheses, so
+  `vim.g.env:upper()` becomes `("production"):upper()`.
+- A module that declares the key's first name itself, as a local, a parameter,
+  a loop variable, or a local function, keeps all of its reads of that key.
+- A key written across several lines is replaced too. Every replacement keeps
+  the module's line numbers: the missing line breaks go before it, and a value
+  that starts a statement after another statement is preceded by `;`.
+- A module that cannot be parsed keeps all of its reads.
+- A key that matches nothing is ignored.
+
+The build fails when a key or value is malformed, when a key is given twice,
+or when a module assigns to a defined key or to a field reached through it,
+such as `vim.g.env = 'x'`, `vim.g.env.y = 1`, or `function vim.g.env() end`.
+
+#### Dead-code removal
+
+Every build removes the branches of `if` and `while` statements whose
+conditions have a fixed value, such as the literals that `--define` inserts.
+A condition has a fixed value when it is built from `true`, `false`, `nil`,
+numbers, strings, parentheses, `not`, `==`, and `~=`, or when the left side of
+`and` or `or` decides the result, as in `false and f()`. Any other condition
+is kept as written.
+
+| Source                                          | Bundle                        |
+| ----------------------------------------------- | ----------------------------- |
+| `if false then A end`, `while false do A end`   | `do end`                      |
+| `if true then A else B end`                     | `do A end`                    |
+| `if false then A elseif x then B end`           | `if x then B end`             |
+| `if x then A elseif true then B else C end`     | `if x then A else B end`      |
+
+A kept branch stays a block, so its locals, `return`, and labels behave as
+before. Removed text is replaced with line breaks, so later lines keep their
+numbers. A `require` in a removed branch is not linked, but its module is
+still bundled.
 
 ### `install`
 
@@ -194,6 +251,10 @@ the same rule applies: no `entry` means a registry. The dependency's own
 `nvim-bundle.json` is never read, so any Lua repository can be vendored,
 whether or not it uses nvim-bundle.
 
+The vendored file is that bundle with `---@diagnostic disable` as its first
+line, and the lock's `sha256` covers both. See
+[Why vendored files silence their diagnostics](explanation.md#why-vendored-files-silence-their-diagnostics).
+
 The default alias is the first segment of `entry`, else the one package under
 the root. An example is `entry = "plenary.async"`, which vendors as
 `vendor/plenary.lua`; `--as` picks another name.
@@ -215,6 +276,10 @@ the root. An example is `entry = "plenary.async"`, which vendors as
 | `name`         | The module root, i.e., `lua/<name>/`. Inferred from `lua/` when missing.   |
 | `dependencies` | Alias → [dependency](#dependencies). The alias names `vendor/<alias>.lua`. |
 
+An object entry accepts only `repo`, `ref`, `entry`, `root`, and `exclude`.
+Other top-level keys are kept as they are. A JSON `null` counts as a missing
+field.
+
 The commands rewrite the file with sorted keys and two-space indentation, so a
 one-dependency change is a one-line diff.
 
@@ -232,7 +297,8 @@ Each entry records what its dependency resolved to:
 | `built_with`              | The nvim-bundle version that built the bundle.                 |
 | `sha256`                  | The hash of the vendored file's exact bytes.                   |
 
-`lock_version` is `1`. Commit both files alongside `vendor/`.
+`lock_version` is `1`, and a lock with any other version is rejected. An entry
+accepts only the fields above. Commit both files alongside `vendor/`.
 
 ## Module ids
 
@@ -292,6 +358,10 @@ named module's value or, with no module, a registry table keyed by module id.
   bundle itself under the bundle's name.
 - The header records the shape as `-- returns: <entry>` or
   `-- returns: registry`.
+- Every module except the returned one sees `arg` as an empty table, so a
+  library's own main guard never runs. In a registry, every module sees it.
+  `debug.getinfo` reports the bundle file for every module; see
+  [Why libraries see an empty `arg`](explanation.md#why-libraries-see-an-empty-arg).
 
 With `--bin`, the file also starts with the shebang
 `#!/usr/bin/env -S nvim --clean -l` and a modeline, and carries the executable
@@ -313,7 +383,9 @@ local result = NvimBundle.build { entry = 'myplugin' }
 `entry` names the returned module; leave it out for a registry. `root` defaults
 to `lua`, `out` defaults as in [`build`](#build), and `exclude` defaults to an
 empty list. Set `bin = true` to make the output executable, which needs
-`entry`.
+`entry`. `define` maps each key to its value, as [`--define`](#defines) does.
+An unknown option, or an option of the wrong type, raises an error that names
+it.
 
 ```lua
 {
@@ -344,6 +416,11 @@ The bundler stops before writing a bundle when:
 - Two files map to the same module id.
 - An `--exclude` glob is invalid.
 
+Every command that reads `nvim-bundle.json` or `nvim-bundle.lock.json` stops
+before changing anything when either file is not valid JSON or does not match
+its schema. The error names the file and lists each problem with its path, for
+example `` `.dependencies["dep"].repo`: Expected string ``.
+
 Byte-order marks and shebangs are removed from module sources, and a missing
 final newline is added.
 
@@ -357,12 +434,26 @@ final newline is added.
 - `lua/nvim-bundle/git.lua` — the git commands that every dependency goes
   through.
 - `lua/nvim-bundle/files.lua` — file and JSON I/O.
+- `lua/nvim-bundle/transform.lua` — the pipeline of source transforms that
+  every bundled module passes through.
+- `lua/nvim-bundle/transform/define.lua` — the `--define` pass.
+- `lua/nvim-bundle/transform/dead_code.lua` — the pass that removes branches
+  that can never run.
+- `lua/nvim-bundle/transform/require.lua` — the pass that links static
+  requires.
+- `lua/nvim-bundle/dto.lua` — guard schemas for the manifest, the lock, and
+  `build` options.
+- `lua/nvim-bundle/dto.types.lua` — LuaCATS classes generated from those
+  schemas by `mise run generate`; git-ignored.
 - `lua/nvim-bundle/version.lua` — the version a checkout reports.
 - `lua/nvim-bundle/vendor/args.lua` — vendored args.nvim argument parser.
+- `lua/nvim-bundle/vendor/guard.lua` — vendored guard schema library.
+- `TODO.md` — known gaps that are out of scope for now.
 - `docs/how-to.md` — task-oriented guides.
 - `docs/reference.md` — this reference.
 - `docs/explanation.md` — design rationale and limitations.
-- `spec/nvim-bundle_spec.lua` — black-box tests using temporary fixture trees.
+- `spec/*_spec.lua` — black-box tests using temporary fixture trees, one file per area.
+- `spec/helpers.lua` — the fixture, CLI, and git helpers the spec files share.
 - `library/busted/` — git submodule with type stubs for busted.
 - `scripts/env.sh` — exports `PREFIX`, `VIMRUNTIME`, and the luarocks path.
 - `dist/` — generated bundles; git-ignored.

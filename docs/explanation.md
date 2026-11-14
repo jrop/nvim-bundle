@@ -89,6 +89,60 @@ guard would call the entry unconditionally, which evaluates the entry on
 library require and duplicates the entry's own check. Keeping the check in the
 entry means one implementation and one place to change.
 
+### Why libraries see an empty `arg`
+
+A bundle should give each module the answer that `require` would give it when
+the module asks whether it is the main script. Under `require`, a library sees
+the same global `arg` as the script, but its own source path differs from
+`arg[0]`, so its check is false. In a bundle that difference is gone. An
+example of this is guard, which nvim-bundle vendors and which has its own CLI:
+
+1. Every bundled module is defined in the bundle file, so
+   `debug.getinfo(1, 'S').source` names the bundle for each of them.
+2. Executing the bundle makes the bundle file `arg[0]`.
+3. So guard's `is_main` compares two equal paths, and guard would run its CLI
+   on nvim-bundle's arguments before nvim-bundle's own `main` ran.
+
+The bundle cannot make the source paths differ again, so it changes the other
+side of the comparison instead. Every module except the returned one begins
+with `local arg = {}`, and in a registry every module does:
+
+- The local shadows the global lexically, so it also covers a check made after
+  the module loads, and it reaches every module of a nested bundle. The
+  vendored guard is itself a bundle whose entry keeps the `arg` around it, so
+  that entry sees nvim-bundle's empty table.
+- An empty table is what plain plugin code sees in Neovim without `-l`, so
+  every Neovim library already handles it: `arg[0]` is nil, and a main guard
+  that reads it is false. `nil` would instead crash a library that indexes
+  `arg` without checking, because Neovim itself never leaves `arg` unset.
+- Each module gets its own table, so one library that writes to `arg` cannot
+  affect another.
+
+This choice has costs, and one of them is not specific to `arg`:
+
+- A library that reads the script's arguments from the global `arg[1..]` gets
+  nothing in a bundle. Argument parsers such as args.nvim take `argv` as a
+  parameter, so this affects only a library that already behaves like the
+  script.
+- `debug.getinfo` is not preserved. Every bundled frame reports the bundle file
+  as its source, with line numbers in the bundle, and that also holds for
+  tracebacks and error positions. A library that finds its own files relative
+  to its source path, for example `vim.fs.dirname(info.source:sub(2))`, finds
+  the bundle's directory instead.
+
+The alternatives were rejected because they preserve less or cost more:
+
+- Giving each module a replacement `debug` that reports the module's original
+  path would only be correct for the module's own frame. Every other frame
+  would still report the bundle, and checks that do not use `debug.getinfo`
+  would still be wrong.
+- Swapping the global `arg` while a library loads would miss a check made
+  after loading. It would also need care to restore `arg` when loading fails,
+  and other code could see the swapped global in the meantime.
+- Loading each module as its own chunk with its original name would preserve
+  `debug.getinfo` exactly. That needs sources stored as strings, which would
+  hide their annotations from the language server.
+
 ## Why some requires stay dynamic
 
 Some calls cannot be resolved safely at build time. Those calls keep using the
@@ -96,8 +150,6 @@ host's `require`, and their values are typed as `any`:
 
 - A computed module name, such as `require(name)`.
 - A `require`, `pcall`, or `xpcall` that the module shadows or aliases.
-- A multi-line `require`. Rewriting it would shift the generated file's line
-  numbers, so it is left alone.
 - A module excluded with `--exclude`.
 - A module outside the source root.
 - A module that the Lua parser cannot parse.
@@ -105,6 +157,140 @@ host's `require`, and their values are typed as `any`:
 Those calls are external to the bundle. If the generated file is installed as
 `lua/myplugin.lua`, a computed `require 'myplugin.util'` does not reach the
 bundled copy.
+
+## Source transforms
+
+Every bundled module passes through a short pipeline of transforms before it
+is emitted. Each transform, called a pass, takes the module's syntax tree and
+returns a new one. The passes are `--define`, dead-code removal, and linking
+requires, in that order.
+
+### Why a pass edits text
+
+A tree-sitter tree is a read-only view of its source text, so a pass changes
+the text and the tree is parsed again. An example of this is the require
+pass, which turns one call into another:
+
+1. The pass finds `require 'myplugin.util'` with a query, i.e., as a node with
+   a byte range.
+2. It replaces the text in that range with `__mods._myplugin_util("myplugin.util")`.
+3. The pipeline parses the new text, so the next pass sees the call it will
+   actually emit.
+
+Editing text keeps everything outside the replaced ranges exactly as written:
+comments, whitespace, and the `---@` annotations that the language server
+reads. A transform that printed code back from a tree would have to work to
+preserve them.
+
+### Why every replacement keeps its line count
+
+The bundle keeps each module's lines where the source has them, so an error's
+line in the bundle, minus the line where the module begins, is the line in the
+source. A pass may still shorten a construct that spans several lines. An
+example of this is a `require` call that a formatter split:
+
+1. `require(\n  'dep'\n)` spans three lines, and its replacement
+   `__mods._dep("dep")` spans one.
+2. So the pipeline puts the two missing line breaks before the replacement,
+   i.e., `\n\n__mods._dep("dep")`.
+3. The text after the call stays on the line where it was, so every later line
+   keeps its number.
+
+The breaks go before the replacement, because a break before an expression is
+always valid Lua. A break after one is not: `("x")` followed by a line that
+starts with `(1)` would read as a call. A pass that produces more lines than it
+replaces has a bug, so the build fails rather than shift the lines.
+
+Shortening a construct is safer than skipping it. A skipped `require` would
+stay a host require, which a vendored bundle usually cannot resolve, and a
+skipped define would keep the value the build meant to replace.
+
+### Why some values start with `;`
+
+A replacement that starts with `(` can join the line before it. An example of
+this is a statement that starts with a defined key:
+
+1. `vim.g.env:upper()` follows `local s = tostring` on the line before.
+2. The replacement `("prod"):upper()` makes the two lines read as the call
+   `tostring("prod")`, which LuaJIT rejects as ambiguous syntax.
+3. So the pipeline writes `;("prod"):upper()`, and the `;` ends the previous
+   statement first.
+
+The `;` is added only when another statement precedes the one the
+replacement starts, skipping comments, because LuaJIT rejects `;` as the
+first statement of a block. Nothing precedes that first statement for the `(`
+to join.
+
+### Why the passes run in order
+
+Each pass sees the text that the previous pass produced, so each one builds
+on the passes before it. An example of this is a development-only branch:
+
+1. `--define '__DEV__=false'` turns `if __DEV__ then` into `if false then`.
+2. Dead-code removal sees the literal `false`, so it removes the branch.
+3. The require pass runs last, so a `require` inside the removed branch is
+   never linked.
+
+The same order links a define value that contains `require 'dep'`. It is also
+why a defined value is inserted without parentheses wherever the syntax allows
+it: dead-code removal reads the literal itself.
+
+### Why `--define` replaces expressions
+
+A define replaces reads of a name, rather than a whole module, because that is
+what dead-code removal builds on. The rules follow from what a read
+is:
+
+- Strings, comments, table keys, and field names contain the key's text, but
+  they do not read the variable, so they are left alone.
+- A module that declares the key's first name, for example
+  `local __DEV__ = true`, reads its own variable there. Telling those reads
+  apart from reads of the global needs scope analysis, so the module keeps
+  all of them, as a module that shadows `require` keeps all of its requires.
+- A module that assigns a defined key contradicts the define, because the
+  build fixes a value the code means to change. So the build fails rather
+  than guess which one should win.
+- A key that matches nothing is not an error, because one set of defines
+  commonly serves modules that use only some of them.
+
+Defines apply to vendored bundles too, because a vendored bundle is one more
+module in the source tree. That matches how a global setting such as
+`__DEV__` is usually meant.
+
+### How dead-code removal stays safe
+
+Dead-code removal deletes only a branch that can never run, and it never
+changes what the kept code does. So it runs on every build, and no option
+turns it off. A branch can never run only when its condition has a fixed
+value, which means the condition is built from literals alone:
+
+- `true`, `false`, `nil`, numbers, and strings qualify. `true`, `false`, and
+  `nil` are keywords, so no module can shadow them.
+- `not`, `==`, `~=`, and parentheses over fixed values qualify.
+- `false and f()` and `true or f()` qualify, because the right side never
+  runs.
+- A variable, a call, or a table constructor does not qualify, because
+  evaluating it could have side effects or depend on the program.
+
+A kept branch becomes a `do ... end` block rather than bare statements. An
+example of this is `if true then local x = 1; return x end`:
+
+1. Unwrapped, `local x` would reach the code after the statement, and might
+   shadow a name there.
+2. Unwrapped, `return x` would be followed by more statements, which Lua
+   rejects.
+3. As `do local x = 1; return x end`, both behave as they did inside the
+   branch, and so do labels.
+
+A statement that is removed whole becomes `do end` rather than nothing. Its
+neighbors would otherwise meet: a line that starts with `(` would continue the
+expression on the line before the removed statement, as the `;` rule above
+describes. `do end` is a statement that no expression can absorb. Every removed
+part is padded with line breaks like any other replacement, so the lines after
+it keep their numbers.
+
+A removed `require` no longer runs, but its module is still bundled, because
+nvim-bundle does not drop unused modules. See [`TODO.md`](../TODO.md).
 
 ## Why type information survives
 
@@ -189,6 +375,32 @@ whose modules `require 'args.util'` internally:
 The dependency's own `vendor/` is linked into its bundle the same way, so a
 consumer never resolves transitive dependencies.
 
+Shared dependencies are not deduplicated: a module that two bundles both link
+is emitted once in each. An example of this is nvim-bundle itself, which
+vendors args.nvim and also vendors guard, whose bundle links its own copy of
+args.nvim. So the release carries the parser twice, and each copy has its own
+module cache. See [`TODO.md`](../TODO.md) for what deduplicating would need.
+
+### Why the manifest and the lock are validated on load
+
+Every command trusts the manifest and lock values it reads, so both files are
+checked against a schema before any command uses them. An example of this is
+an object entry whose `exclude` is a string:
+
+1. Without a check, `build` would receive the string where it expects a list.
+2. The failure would then surface far from its cause, as an error about globs.
+3. With the check, the command stops at load time and names the field, i.e.,
+   `` `.dependencies["dep"].exclude`: Expected array ``.
+
+The schemas live in `lua/nvim-bundle/dto.lua` and are written with guard. guard
+also generates LuaCATS classes from the same schemas, so the shapes that are
+validated are exactly the shapes the type checker sees. The generated
+`dto.types.lua` is a build artifact; `mise run generate` creates it.
+
+The schemas describe only what is in the files. Splitting `repo@ref` and
+choosing a clone URL stay in `deps.lua`, because they turn a valid entry into a
+dependency rather than decide whether the entry is valid.
+
 ### Why every dependency is built from source
 
 A dependency is fetched with git and built by the consumer, because git is the
@@ -198,6 +410,27 @@ directory, without its author adopting any publishing convention. So there is
 one way to get a dependency, it works on any host git can reach, and it uses the
 user's own git credentials rather than an API token. The vendored bytes also
 come from a commit anyone can read, rather than from an uploaded file.
+
+### Why vendored files silence their diagnostics
+
+A diagnostic should be reported where someone can fix it, and a vendored file
+is not that place. An example of this is a type warning inside guard's code in
+`vendor/guard.lua`:
+
+1. The file is generated, and `install` would overwrite a local fix.
+2. So the only real fix is upstream, in guard's own repository.
+3. In the consuming project, the warning can only fail its lint.
+
+So every vendored file begins with `---@diagnostic disable`. The comment
+silences only the file's own diagnostics: code that calls into it is still
+checked against its types. An option to turn it off would change the vendored
+bytes, so it would need a place in the manifest and the lock, and no consumer
+has needed it.
+
+Ignoring the directory instead would not work with emmylua_check. Its
+`--ignore`, `ignoreDir`, and `ignoreGlobs` settings also drop the files from
+analysis, so a module that uses a vendored dependency's types would no longer
+find them.
 
 ### Why `install` takes `build`'s arguments
 
@@ -241,7 +474,7 @@ names both versions, rather than reporting a bare mismatch.
 nvim-bundle parses its own command line with a vendored copy of args.nvim, and
 the release task builds nvim-bundle with nvim-bundle. An example is the release
 asset: the task runs the checkout's own `lua/nvim-bundle.lua` over `lua/` with
-`--bin`, then stamps the tag into the built file. The `--bin` output inlines the
+`--bin`, and `--define` sets the version it reports. The `--bin` output inlines the
 vendored module, so the published asset remains one file even though the source
 tree now contains a `require`.
 

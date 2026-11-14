@@ -57,6 +57,23 @@ Run `nvim-bundle <command> --help` for a command's options.
 --- @return never
 local function die(msg) error('nvim-bundle: ' .. msg, 0) end
 
+--- Split each `key=value` on its first `=`, since a value is Lua code and may
+--- contain `=` itself. The build validates keys and values, so this only
+--- shapes them.
+--- @param specs string[]?
+--- @return table<string, string>?
+local function parse_defines(specs)
+  if not specs then return nil end
+  local define = {}
+  for _, spec in ipairs(specs) do
+    local key, value = spec:match '^([^=]*)=(.*)$'
+    if not key then die(('--define needs <key>=<value>, got %q'):format(spec)) end
+    if define[key] then die(('--define %s is given twice'):format(key)) end
+    define[key] = value
+  end
+  return define
+end
+
 --- @param lines string[]
 --- @return string
 local function report(lines)
@@ -67,12 +84,12 @@ end
 --- Each command owns its options, its usage text, and a `run` that turns the
 --- parsed options into stdout lines, so `main` owns every process-level concern.
 --- Every command also accepts `-h`/`--help`, added when the spec is built.
---- @class NvimBundle.Command
+--- @class nvim-bundle.Command
 --- @field options table<string, any> an args.nvim spec for this command
 --- @field usage string
 --- @field run fun(parsed: table): string
 
---- @type table<string, NvimBundle.Command>
+--- @type table<string, nvim-bundle.Command>
 local COMMANDS = {
   build = {
     options = {
@@ -80,6 +97,7 @@ local COMMANDS = {
       ['--out'] = 'string',
       ['--exclude'] = { 'string' },
       ['--bin'] = 'boolean',
+      ['--define'] = { 'string' },
     },
     usage = [[
 Usage: nvim-bundle build [<entry>] [options]
@@ -93,11 +111,14 @@ Options:
                      dist/<package>.lua for a registry)
   --exclude <glob>   Skip paths matching <glob> (repeatable)
   --bin              Make an executable (needs <entry>)
+  --define <k>=<v>   Replace each read of the global name or dotted path <k>
+                     with the Lua expression <v> (repeatable)
   -h, --help         Show this help
 
 Examples:
   nvim-bundle build myplugin
   nvim-bundle build myplugin --exclude '**/_test/**'
+  nvim-bundle build myplugin --define 'vim.g.myplugin_env="production"'
 ]],
     run = function(parsed)
       local entry = parsed._[1]
@@ -108,6 +129,7 @@ Examples:
         out = parsed['--out'],
         exclude = parsed['--exclude'],
         bin = parsed['--bin'],
+        define = parse_defines(parsed['--define']),
       }
       local shape = result.entry and ('returns ' .. result.entry) or 'registry'
       return ('bundled %d modules into %s (%s)'):format(result.modules, result.out, shape)

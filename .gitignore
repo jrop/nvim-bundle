@@ -3,3 +3,4 @@ dist/
 *.src.rock
 *.aider*
 luacov.*.out
+*.types.lua

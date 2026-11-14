@@ -1,3 +1,4 @@
 library/
 dist/
 lua/nvim-bundle/vendor/
+*.types.lua

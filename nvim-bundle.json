@@ -4,6 +4,11 @@
       "entry": "args",
       "ref": "v0.1.0",
       "repo": "jrop/args.nvim"
+    },
+    "guard": {
+      "entry": "guard",
+      "ref": "v0.1.0",
+      "repo": "jrop/guard.nvim"
     }
   },
   "name": "nvim-bundle"
