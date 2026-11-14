@@ -28,7 +28,11 @@ All tasks use `mise`:
 - `mise run lint` - `generate`, then type-check with `emmylua_check` (warnings
   are errors)
 - `mise run test` - run busted against Neovim 0.12.6
+- `mise run test:version <version>` - run busted against one Neovim version,
+  which mise installs first (`nightly` is refreshed when its tag moves)
 - `mise run test:all` - run busted against 0.10.4, 0.11.7, 0.12.6, and nightly
+- `mise run test:fast` - run busted against the default Neovim, skipping
+  `test:prepare`
 - `mise run test:coverage` - test with luacov (covers `lua/nvim-bundle` only)
 - `mise run ci` - `fmt:check` then `lint` then `test:all`
 - `mise run release` - publish the current `v*` tag to GitHub (maintainers only)
@@ -42,7 +46,7 @@ git submodule update --init --recursive
 Run one spec file directly after `mise run test:prepare`:
 
 ```sh
-eval $(nvimv env 0.12.6)
+eval "$(luarocks path)"
 busted spec/define_spec.lua
 ```
 

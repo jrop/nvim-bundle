@@ -455,5 +455,4 @@ final newline is added.
 - `spec/*_spec.lua` — black-box tests using temporary fixture trees, one file per area.
 - `spec/helpers.lua` — the fixture, CLI, and git helpers the spec files share.
 - `library/busted/` — git submodule with type stubs for busted.
-- `scripts/env.sh` — exports `PREFIX`, `VIMRUNTIME`, and the luarocks path.
 - `dist/` — generated bundles; git-ignored.

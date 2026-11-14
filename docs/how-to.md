@@ -300,7 +300,9 @@ Run the checks:
 | `mise run generate`      | Generate `dto.types.lua` when `dto.lua` is newer.          |
 | `mise run lint`          | Generate types, then type-check; warnings are errors.      |
 | `mise run test`          | Run the busted suite against Neovim 0.12.6.                |
+| `mise run test:version`  | Run the suite against one Neovim version, e.g. `0.10.4`.   |
 | `mise run test:all`      | Run the suite against 0.10.4, 0.11.7, 0.12.6, and nightly. |
+| `mise run test:fast`     | Run the suite without preparing test dependencies.         |
 | `mise run test:coverage` | Run the suite with luacov.                                 |
 | `mise run ci`            | Run `fmt:check`, `lint`, and `test:all`.                   |
 
@@ -308,7 +310,7 @@ Run a single spec file after preparing the test dependencies:
 
 ```sh
 mise run test:prepare
-eval $(nvimv env 0.12.6)
+eval "$(luarocks path)"
 busted spec/define_spec.lua
 ```
 
