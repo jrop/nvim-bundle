@@ -93,6 +93,18 @@ describe('project files', function()
   )
 
   it(
+    'rejects an alias listed as both a dependency and a dev dependency',
+    function()
+      rejects({
+        ['nvim-bundle.json'] = vim.json.encode {
+          dependencies = { dep = 'me/dep' },
+          dev_dependencies = { dep = 'me/dep' },
+        },
+      }, 'An alias is listed in dependencies or dev_dependencies, not both')
+    end
+  )
+
+  it(
     'treats a null field as absent',
     function()
       rejects({ ['nvim-bundle.json'] = '{"dependencies": null}' }, 'dep is not a dependency')

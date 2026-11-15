@@ -63,7 +63,12 @@ busted spec/define_spec.lua
   `outdated`. Every dependency is a git repository built from source: it parses
   each manifest entry once into a dependency value and owns the manifest and
   lock entries. Every vendored file starts with `---@diagnostic disable`, and
-  its locked `sha256` covers that line.
+  its locked `sha256` covers that line. A dev dependency
+  (`dev_dependencies`) is vendored and managed like any other; `dev_excludes`
+  turns a project's dev dependencies into excludes, which the `build` CLI
+  applies to the cwd's project and `install` applies to a dependency's
+  checkout. The lock records no dev flag: the manifest section is the one
+  source.
 - **`lua/nvim-bundle/git.lua`** - the git commands every dependency goes
   through: `latest_tag`, `branch_head`, `ref_kind`, and `checkout`.
 - **`lua/nvim-bundle/dto.lua`** - guard schemas for every value that enters

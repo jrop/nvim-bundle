@@ -63,7 +63,7 @@ describe('install', function()
     }, read_json(project .. '/nvim-bundle.lock.json'))
   end)
 
-  it("ignores the dependency's own nvim-bundle.json", function()
+  it("ignores the build settings in the dependency's own nvim-bundle.json", function()
     local dep = remote()
     dep.commit({
       ['nvim-bundle.json'] = vim.json.encode {
@@ -277,6 +277,105 @@ describe('install', function()
 
     assert.are.equal('dep', require_vendored(project, 'dep'))
     assert.is_truthy(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep)
+  end)
+end)
+
+describe('dev dependencies', function()
+  it('records a dependency installed with --dev under dev_dependencies', function()
+    local dep = remote()
+    dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+    install(project, { '--dev', dep.url .. '@v1.0.0' })
+
+    assert.are.equal('dep', require_vendored(project, 'dep'))
+    assert.are.same({
+      name = 'myplug',
+      dependencies = {},
+      dev_dependencies = { dep = dep.url .. '@v1.0.0' },
+    }, read_json(project .. '/nvim-bundle.json'))
+  end)
+
+  it('moves an alias installed again without --dev back to dependencies', function()
+    local dep = remote()
+    dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+    install(project, { '--dev', dep.url .. '@v1.0.0' })
+
+    install(project, { dep.url .. '@v1.0.0' })
+
+    local manifest = read_json(project .. '/nvim-bundle.json')
+    assert.are.equal(dep.url .. '@v1.0.0', manifest.dependencies.dep)
+    assert.is_nil(manifest.dev_dependencies)
+  end)
+
+  it('restores a missing dev dependency without moving it', function()
+    local dep = remote()
+    dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+    install(project, { '--dev', dep.url .. '@v1.0.0' })
+    os.remove(project .. '/lua/myplug/vendor/dep.lua')
+
+    local proc = cli { '-C', project, 'install' }
+    assert.are.equal(0, proc.code, proc.stderr)
+
+    assert.are.equal('restored dep\n', proc.stdout)
+    assert.are.equal('dep', require_vendored(project, 'dep'))
+    assert.is_truthy(read_json(project .. '/nvim-bundle.json').dev_dependencies.dep)
+  end)
+
+  it('updates a dev dependency and keeps it under dev_dependencies', function()
+    local dep = remote()
+    dep.commit({ ['lua/dep/init.lua'] = 'return "v0.1.0"\n' }, 'v0.1.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+    install(project, { '--dev', dep.url .. '@v0.1.0' })
+    dep.commit({ ['lua/dep/init.lua'] = 'return "v0.2.0"\n' }, 'v0.2.0')
+
+    local outdated = cli { '-C', project, 'outdated' }
+    assert.are.equal('dep v0.1.0 -> v0.2.0\n', outdated.stdout)
+    local proc = cli { '-C', project, 'update' }
+    assert.are.equal(0, proc.code, proc.stderr)
+
+    assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
+    assert.are.same(
+      { dep = dep.url .. '@v0.2.0' },
+      read_json(project .. '/nvim-bundle.json').dev_dependencies
+    )
+  end)
+
+  it('removes a dev dependency', function()
+    local dep = remote()
+    dep.commit({ ['lua/dep/init.lua'] = 'return "dep"\n' }, 'v1.0.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+    install(project, { '--dev', dep.url .. '@v1.0.0' })
+
+    local proc = cli { '-C', project, 'remove', 'dep' }
+    assert.are.equal(0, proc.code, proc.stderr)
+
+    assert.is_nil(vim.uv.fs_stat(project .. '/lua/myplug/vendor/dep.lua'))
+    assert.is_nil(read_json(project .. '/nvim-bundle.json').dev_dependencies)
+    assert.is_nil(next(read_json(project .. '/nvim-bundle.lock.json').dependencies))
+  end)
+
+  it("leaves a dependency's own dev dependencies out of its bundle", function()
+    local dep = remote()
+    dep.commit({
+      ['nvim-bundle.json'] = vim.json.encode {
+        name = 'dep',
+        dependencies = { args = 'me/args.nvim@v1.0.0' },
+        dev_dependencies = { test = 'me/test.nvim@v1.0.0' },
+      },
+      ['lua/dep/init.lua'] = 'return "dep"\n',
+      ['lua/dep/vendor/args.lua'] = 'return "args"\n',
+      ['lua/dep/vendor/test.lua'] = 'return "test"\n',
+    }, 'v1.0.0')
+    local project = fixture { ['lua/myplug/init.lua'] = 'return {}\n' }
+
+    install(project, { dep.url .. '@v1.0.0' })
+
+    local registry = load_bundle(project .. '/lua/myplug/vendor/dep.lua')()
+    assert.are.equal('args', registry['dep.vendor.args']())
+    assert.is_nil(registry['dep.vendor.test'])
   end)
 end)
 

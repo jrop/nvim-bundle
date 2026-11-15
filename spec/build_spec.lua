@@ -412,6 +412,26 @@ describe('module function names', function()
 end)
 
 describe('excludes', function()
+  it("leaves out the project's own dev dependencies", function()
+    local project = fixture {
+      ['nvim-bundle.json'] = vim.json.encode {
+        name = 'myplug',
+        dependencies = { args = 'me/args.nvim@v1.0.0' },
+        dev_dependencies = { test = 'me/test.nvim@v1.0.0' },
+      },
+      ['lua/myplug/init.lua'] = 'return {}\n',
+      ['lua/myplug/vendor/args.lua'] = 'return "args"\n',
+      ['lua/myplug/vendor/test.lua'] = 'return "test"\n',
+    }
+    local out = project .. '-out/myplug.lua'
+
+    run_ok { '-C', project, 'build', '--out', out }
+
+    local registry = load_bundle(out)()
+    assert.are.equal('args', registry['myplug.vendor.args']())
+    assert.is_nil(registry['myplug.vendor.test'])
+  end)
+
   it('skips files matching an exclude glob', function()
     local root = fixture {
       ['entry.lua'] = "return { dep = require 'dep', skip = require 'vendor.skip' }\n",

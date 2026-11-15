@@ -76,6 +76,11 @@ demo)` or `(registry)`.
 | `--define <k>=<v>` | Replaces reads of `<k>` with `<v>`; see [Defines](#defines).      |
 | `-h`, `--help`     | Prints the `build` usage without bundling anything.               |
 
+`build` also leaves out the [dev dependencies](#dev-dependencies) listed in the
+current directory's `nvim-bundle.json`, so a release contains what a
+consumer's vendored copy contains. `-C <dir>` builds the project in `<dir>`.
+The Lua [`build`](#nvim-bundlebuildopts) API reads no manifest.
+
 #### Defines
 
 `--define <key>=<value>` replaces every read of `<key>` in every bundled
@@ -142,6 +147,8 @@ Options:
                      package of <entry>, or the repository's one package)
   --force            Overwrite a vendored file that install did not create
   --frozen           With no <spec>, fail instead of changing any file
+  --dev              Record it under dev_dependencies: it is vendored the
+                     same way, but no build of this project includes it
   -h, --help         Show this help
 ```
 
@@ -158,6 +165,10 @@ manifest records that tag.
 `install jrop/args.nvim@v0.1.0 args`: the bundle returns `args`, so
 `require 'myplugin.vendor.args'` behaves like `require 'args'`. Without
 `<entry>`, the bundle is a registry.
+
+`--dev` records the dependency under `dev_dependencies` instead; see
+[Dev dependencies](#dev-dependencies). Installing an alias again moves it to
+the section the new command names, i.e., to `dependencies` without `--dev`.
 
 `install` refuses to overwrite a file in `vendor/` that the lock does not list,
 so a hand-written module is never replaced by accident. `--force` replaces it
@@ -247,9 +258,11 @@ skipped.
 
 A dependency is built exactly as `nvim-bundle build` would build it in a
 checkout, with the entry's `entry`, `root`, and `exclude` as the arguments. So
-the same rule applies: no `entry` means a registry. The dependency's own
-`nvim-bundle.json` is never read, so any Lua repository can be vendored,
-whether or not it uses nvim-bundle.
+the same rule applies: no `entry` means a registry. Of the dependency's own
+`nvim-bundle.json`, only `name` and `dev_dependencies` are read, to leave its
+dev dependencies out of the bundle; every build setting comes from the
+consumer's entry. A repository without the file is built as it is, so any Lua
+repository can be vendored, whether or not it uses nvim-bundle.
 
 The vendored file is that bundle with `---@diagnostic disable` as its first
 line, and the lock's `sha256` covers both. See
@@ -259,6 +272,29 @@ The default alias is the first segment of `entry`, else the one package under
 the root. An example is `entry = "plenary.async"`, which vendors as
 `vendor/plenary.lua`; `--as` picks another name.
 
+### Dev dependencies
+
+A dev dependency is a dependency that a project needs only while it is
+developed, such as a test runner. It is vendored like any other, to
+`lua/<name>/vendor/<alias>.lua`, and `remove`, `update`, `outdated`, and
+`install` with no spec treat it the same way. Builds tell the two apart: no
+build of the project includes its dev dependencies.
+
+An example is guard.nvim, which lists `test` under `dev_dependencies`:
+
+1. guard's repository commits `lua/guard/vendor/test.lua`, so its own specs can
+   require it.
+2. `nvim-bundle build` in guard's checkout leaves that file out.
+3. `nvim-bundle install jrop/guard.nvim` in another project reads guard's
+   manifest and leaves the file out too, so that project's `vendor/guard.lua`
+   contains no test runner.
+
+Only the dev dependencies under the build's root are left out, because a file
+outside the root is never bundled. A library module that requires its own dev
+dependency keeps a host `require`, which fails in a consumer as any missing
+module does; listing a dependency as dev is a promise that the library does
+not use it.
+
 ## Manifest: `nvim-bundle.json`
 
 ```json
@@ -267,16 +303,22 @@ the root. An example is `entry = "plenary.async"`, which vendors as
     "args": { "entry": "args", "ref": "v0.1.0", "repo": "jrop/args.nvim" },
     "dep": "https://example.com/dep.nvim@main"
   },
+  "dev_dependencies": {
+    "test": "https://example.com/test.nvim@v1.0.0"
+  },
   "name": "myplugin"
 }
 ```
 
-| Field          | Meaning                                                                    |
-| -------------- | -------------------------------------------------------------------------- |
-| `name`         | The module root, i.e., `lua/<name>/`. Inferred from `lua/` when missing.   |
-| `dependencies` | Alias → [dependency](#dependencies). The alias names `vendor/<alias>.lua`. |
+| Field              | Meaning                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `name`             | The module root, i.e., `lua/<name>/`. Inferred from `lua/` when missing.   |
+| `dependencies`     | Alias → [dependency](#dependencies). The alias names `vendor/<alias>.lua`. |
+| `dev_dependencies` | The same, for [dev dependencies](#dev-dependencies). Omitted when empty.   |
 
-An object entry accepts only `repo`, `ref`, `entry`, `root`, and `exclude`.
+An alias may appear in only one of the two sections, because both name the
+same `vendor/<alias>.lua`. An object entry accepts only `repo`, `ref`, `entry`,
+`root`, and `exclude`.
 Other top-level keys are kept as they are. A JSON `null` counts as a missing
 field.
 

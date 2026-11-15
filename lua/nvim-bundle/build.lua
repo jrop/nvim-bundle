@@ -8,6 +8,10 @@ local transform = require 'nvim-bundle.transform'
 
 local M = {}
 
+--- The source root when none is given, which `install` also applies to a
+--- dependency's checkout.
+M.DEFAULT_ROOT = 'lua'
+
 local function path_exists(path) return vim.uv.fs_stat(path) ~= nil end
 
 --- @param msg string
@@ -268,7 +272,7 @@ end
 --- @return nvim-bundle.build.BuildResult
 function M.build(opts)
   opts = dto.check(dto.BuildOptions, opts, 'build options') --[[@as nvim-bundle.dto.BuildOptions]]
-  local root = (opts.root or 'lua'):gsub('/+$', '')
+  local root = (opts.root or M.DEFAULT_ROOT):gsub('/+$', '')
   if not path_exists(root) then die('source root not found: ' .. root) end
   if opts.bin and not opts.entry then
     die '--bin needs an entry (for example: nvim-bundle build mycli --bin)'

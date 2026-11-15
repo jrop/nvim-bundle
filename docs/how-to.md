@@ -235,6 +235,26 @@ to choose a different file name, and `--force` to replace a file already in
 `vendor/` that nvim-bundle did not write. Commit `vendor/`, `nvim-bundle.json`,
 and `nvim-bundle.lock.json` together.
 
+## Vendor a test runner as a dev dependency
+
+Install it with `--dev`, so your own specs can use it but nothing built from
+your project ships it:
+
+```sh
+nvim-bundle install --dev me/test.nvim@v1.0.0 test
+```
+
+The file lands in `lua/<name>/vendor/test.lua` like any dependency, and the
+manifest lists it under `dev_dependencies`. Run it on your specs:
+
+```sh
+nvim --clean -l lua/myplugin/vendor/test.lua spec/a_spec.lua
+```
+
+`nvim-bundle build` leaves the file out of your bundle, and a project that
+vendors yours leaves it out of its copy. To make it a regular dependency,
+install it again without `--dev`. See [Dev dependencies](reference.md#dev-dependencies).
+
 ## Vendor an untagged repository
 
 Name a branch after the `@` to follow it, or a full commit SHA to pin it:

@@ -123,11 +123,16 @@ Examples:
     run = function(parsed)
       local entry = parsed._[1]
       if parsed._[2] then die('unexpected argument ' .. parsed._[2]) end
+      -- The cwd is the project being built, as it is for `install`, so a
+      -- release leaves out the same dev dependencies that a consumer's
+      -- vendored copy does.
+      local root = parsed['--root'] or build.DEFAULT_ROOT
+      local exclude = vim.list_extend(deps.dev_excludes(root), parsed['--exclude'] or {})
       local result = build.build {
         entry = entry,
-        root = parsed['--root'],
+        root = root,
         out = parsed['--out'],
-        exclude = parsed['--exclude'],
+        exclude = exclude,
         bin = parsed['--bin'],
         define = parse_defines(parsed['--define']),
       }
@@ -143,6 +148,7 @@ Examples:
       ['--as'] = 'string',
       ['--force'] = 'boolean',
       ['--frozen'] = 'boolean',
+      ['--dev'] = 'boolean',
     },
     -- `[=[` because the usage line itself contains `]]`.
     usage = [=[
@@ -168,6 +174,8 @@ Options:
                      package of <entry>, or the repository's one package)
   --force            Overwrite a vendored file that install did not create
   --frozen           With no <spec>, fail instead of changing any file
+  --dev              Record it under dev_dependencies: it is vendored the
+                     same way, but no build of this project includes it
   -h, --help         Show this help
 
 Examples:
@@ -185,6 +193,7 @@ Examples:
         exclude = parsed['--exclude'],
         as = parsed['--as'],
         force = parsed['--force'],
+        dev = parsed['--dev'],
       })
       return ('installed %s into %s'):format(alias, path)
     end,

@@ -506,11 +506,39 @@ returns `args`, while `install jrop/args.nvim@v0.1.0` bundles like `build` and
 so returns a registry. So there is one rule for what a bundle returns, and one
 set of options, whichever command builds it.
 
-The consumer decides, not the dependency's author: the dependency's own
-`nvim-bundle.json` is never read. That is because the consumer is the one who
-writes the `require`, so the consumer knows which module it wants back. It also
-means a dependency needs no nvim-bundle configuration of its own to be
-vendored.
+The consumer decides how the dependency is built, not the dependency's author:
+no build setting is read from the dependency's own `nvim-bundle.json`. That is
+because the consumer is the one who writes the `require`, so the consumer knows
+which module it wants back. It also means a dependency needs no nvim-bundle
+configuration of its own to be vendored.
+
+### Why the author decides which dependencies are dev
+
+What a bundle returns is the consumer's question, but which files belong to the
+package is the author's, because only the author knows what their tooling is.
+An example is guard.nvim, which vendors a test runner to run its own specs:
+
+1. guard's repository commits `lua/guard/vendor/test.lua`, inside the `lua/`
+   tree that every build of guard scans.
+2. A consumer who installs guard cannot tell that file from guard's library,
+   so the consumer would have to find it and pass `--exclude` for it.
+3. guard's manifest already lists the runner under `dev_dependencies`, so
+   `install` reads that list and leaves the file out instead.
+
+So `install` reads two fields of the dependency's manifest: `dev_dependencies`,
+and `name`, which locates `lua/<name>/vendor/`. A plain `build` of the project
+leaves out the same files, so an author's release and a consumer's vendored
+copy of one commit contain the same modules.
+
+Dev dependencies are still vendored to `lua/<name>/vendor/`, like every other
+dependency, rather than to a directory outside the build root. That keeps one
+place and one `require` form for every vendored file, and only the manifest
+says which ones are dev.
+
+The lock records no `dev` flag. Which section a dependency is in changes no
+vendored byte, and nothing reads the flag: exclusion reads the dependency's
+manifest, not its lock. So the manifest is the one place that says which
+dependencies are dev.
 
 ### Why the manifest and the lock are separate
 

@@ -29,6 +29,7 @@ local function die(msg) error('nvim-bundle: ' .. msg, 0) end
 --- @field url string what git clones
 --- @field ref? string a tag, branch, or commit; nil until the newest tag is chosen
 --- @field kind? nvim-bundle.dto.RefKind what `ref` names, once resolved
+--- @field dev? boolean listed under `dev_dependencies`
 
 --- A dependency whose ref and kind are known, which is what building and
 --- comparing need.
@@ -64,6 +65,33 @@ local function parse(entry)
     root = entry.root,
     exclude = entry.exclude,
   }
+end
+
+--- Both manifest sections as one table, because every command treats a dev
+--- dependency like any other; only a build of the project tells them apart.
+--- @param manifest nvim-bundle.dto.Manifest
+--- @return table<string, nvim-bundle.deps.Dependency>
+local function dependencies(manifest)
+  local deps = {}
+  for alias, entry in pairs(manifest.dependencies) do
+    deps[alias] = parse(entry)
+  end
+  for alias, entry in pairs(manifest.dev_dependencies) do
+    deps[alias] = parse(entry)
+    deps[alias].dev = true
+  end
+  return deps
+end
+
+--- Record `entry` in the section `dev` names. An alias lives in exactly one
+--- section, so this also clears it from the other, and a nil entry clears both.
+--- @param manifest nvim-bundle.dto.Manifest
+--- @param alias string
+--- @param entry nvim-bundle.dto.ManifestDependency?
+--- @param dev boolean?
+local function record(manifest, alias, entry, dev)
+  manifest.dependencies[alias] = not dev and entry or nil
+  manifest.dev_dependencies[alias] = dev and entry or nil
 end
 
 --- @param dep nvim-bundle.deps.Dependency | nvim-bundle.dto.LockEntry
@@ -126,12 +154,102 @@ local function sorted_keys(t)
   return keys
 end
 
+--- A project's files are in `dir`, or in the cwd when `dir` is nil, so that
+--- messages about the cwd's project name its files as the user sees them.
+--- @param dir string?
+--- @param file string
+--- @return string
+local function in_project(dir, file) return dir and dir .. '/' .. file or file end
+
+--- A missing manifest is valid: `install` creates one. The absent value still
+--- goes through the schema, so its defaults come from one place.
+--- @param dir string?
+--- @return nvim-bundle.dto.Manifest
+local function read_manifest(dir)
+  local path = in_project(dir, MANIFEST)
+  return dto.check(dto.Manifest, files.read_json(path) or {}, path) --[[@as nvim-bundle.dto.Manifest]]
+end
+
+--- The project's module root is `lua/<name>/`: the manifest's `name`, else the
+--- one package under `lua/`.
+--- @param manifest nvim-bundle.dto.Manifest
+--- @param dir string?
+--- @return string
+local function module_name(manifest, dir)
+  local hint = ('add "name" to %s'):format(in_project(dir, MANIFEST))
+  return manifest.name or build.package_name(in_project(dir, 'lua'), hint)
+end
+
+--- @class nvim-bundle.deps.Project
+--- @field name? string inferred on first use, so commands that fail early never need it
+--- @field manifest nvim-bundle.dto.Manifest
+--- @field lock nvim-bundle.dto.Lock
+
+--- A project with neither file is valid: `install` creates both.
+--- @return nvim-bundle.deps.Project
+local function load_project()
+  local manifest = read_manifest()
+  local lock = dto.check(dto.Lock, files.read_json(LOCK) or { lock_version = LOCK_VERSION }, LOCK) --[[@as nvim-bundle.dto.Lock]]
+  return { name = manifest.name, manifest = manifest, lock = lock }
+end
+
+--- @param project nvim-bundle.deps.Project
+--- @return string
+local function project_name(project)
+  project.name = project.name or module_name(project.manifest)
+  return project.name
+end
+
+--- @param project nvim-bundle.deps.Project
+local function save_project(project)
+  project.manifest.name = project_name(project)
+  project.lock.lock_version = LOCK_VERSION
+  -- Most projects have no dev dependencies, so their manifest keeps no empty
+  -- section for them.
+  local manifest = vim.deepcopy(project.manifest)
+  if not next(manifest.dev_dependencies) then manifest.dev_dependencies = nil end
+  files.write_json(MANIFEST, manifest)
+  files.write_json(LOCK, project.lock)
+end
+
+--- Where a project with module root `name` vendors `alias`, relative to the
+--- project directory.
+--- @param name string
+--- @param alias string
+--- @return string
+local function vendored_path(name, alias) return ('lua/%s/vendor/%s.lua'):format(name, alias) end
+
+--- A project vendors its dev dependencies only for developing it, so no build
+--- of the project includes them. This returns them as excludes for a build of
+--- the project in `dir` (the cwd when nil) from `root`. An exclude is matched
+--- against the path below the root, and a file outside the root is never
+--- bundled, so only the dev dependencies under `root` need one.
+--- @param root string the build's source root
+--- @param dir string? the project directory, which holds its manifest
+--- @return string[]
+function M.dev_excludes(root, dir)
+  local manifest = read_manifest(dir)
+  local aliases = sorted_keys(manifest.dev_dependencies)
+  -- Returning before the name is inferred keeps a project without dev
+  -- dependencies buildable when its name is ambiguous.
+  if #aliases == 0 then return {} end
+
+  local name = module_name(manifest, dir)
+  local below = vim.fn.fnamemodify(root, ':p')
+  local excludes = {}
+  for _, alias in ipairs(aliases) do
+    local file = vim.fn.fnamemodify(in_project(dir, vendored_path(name, alias)), ':p')
+    if vim.startswith(file, below) then excludes[#excludes + 1] = file:sub(#below + 1) end
+  end
+  return excludes
+end
+
 --- Check out `ref` and build it exactly as `nvim-bundle build` would in that
---- checkout, with the consumer's settings as its arguments. The dependency's
---- own `nvim-bundle.json` is never read, so any Lua repository can be
---- vendored. Returns the vendored file's content, the alias (`alias`, else the
---- entry's package, else the root's one package), and the commit that was
---- built.
+--- checkout, with the consumer's settings as its arguments. Of the
+--- dependency's own `nvim-bundle.json`, only its dev dependencies are read,
+--- so any Lua repository can be vendored. Returns the vendored file's
+--- content, the alias (`alias`, else the entry's package, else the root's one
+--- package), and the commit that was built.
 --- @param dep nvim-bundle.deps.Dependency
 --- @param kind nvim-bundle.dto.RefKind
 --- @param ref string
@@ -143,8 +261,9 @@ local function build_from_source(dep, kind, ref, alias)
   -- The checkout and output are removed whether or not the build succeeds.
   local ok, built = pcall(function()
     local commit = git.checkout(dep.url, kind, ref, checkout)
-    local root = checkout .. '/' .. (dep.root or 'lua')
-    build.build { entry = dep.entry, root = root, exclude = dep.exclude, out = out }
+    local root = checkout .. '/' .. (dep.root or build.DEFAULT_ROOT)
+    local exclude = vim.list_extend(M.dev_excludes(root, checkout), dep.exclude or {})
+    build.build { entry = dep.entry, root = root, exclude = exclude, out = out }
     local name = alias
       or dep.entry and dep.entry:match '^[^.]+'
       or build.package_name(root, 'pass an entry or --as')
@@ -156,42 +275,6 @@ local function build_from_source(dep, kind, ref, alias)
   vim.fn.delete(out)
   if not ok then error(built, 0) end
   return built.content, built.alias, built.commit
-end
-
---- @class nvim-bundle.deps.Project
---- @field name? string inferred on first use, so commands that fail early never need it
---- @field manifest nvim-bundle.dto.Manifest
---- @field lock nvim-bundle.dto.Lock
-
---- A project with neither file is valid: `install` creates both. The absent
---- values still go through the schemas, so their defaults come from one place.
---- @return nvim-bundle.deps.Project
-local function load_project()
-  local manifest = dto.check(dto.Manifest, files.read_json(MANIFEST) or {}, MANIFEST) --[[@as nvim-bundle.dto.Manifest]]
-  local lock = dto.check(dto.Lock, files.read_json(LOCK) or { lock_version = LOCK_VERSION }, LOCK) --[[@as nvim-bundle.dto.Lock]]
-  return { name = manifest.name, manifest = manifest, lock = lock }
-end
-
---- @param project nvim-bundle.deps.Project
---- @return string
-local function project_name(project)
-  project.name = project.name or build.package_name('lua', ('add "name" to %s'):format(MANIFEST))
-  return project.name
-end
-
---- @param project nvim-bundle.deps.Project
-local function save_project(project)
-  project.manifest.name = project_name(project)
-  project.lock.lock_version = LOCK_VERSION
-  files.write_json(MANIFEST, project.manifest)
-  files.write_json(LOCK, project.lock)
-end
-
---- @param project nvim-bundle.deps.Project
---- @param alias string
---- @return string
-local function vendored_path(project, alias)
-  return ('lua/%s/vendor/%s.lua'):format(project_name(project), alias)
 end
 
 --- Resolve and build `dep`, and record the result in both files. A file the
@@ -207,13 +290,13 @@ local function add(project, dep, alias, force)
   local content, commit
   content, alias, commit = build_from_source(dep, resolved.kind, resolved.ref, alias)
 
-  local path = vendored_path(project, alias)
+  local path = vendored_path(project_name(project), alias)
   if not force and not project.lock.dependencies[alias] and files.read(path) then
     die(('%s exists but is not in the lock; move it, pass --as, or pass --force'):format(path))
   end
   files.write(path, content)
 
-  project.manifest.dependencies[alias] = manifest_entry(dep)
+  record(project.manifest, alias, manifest_entry(dep), dep.dev)
   project.lock.dependencies[alias] = {
     source = dep.url,
     ref = resolved.ref,
@@ -250,6 +333,7 @@ end
 --- @class nvim-bundle.deps.InstallOptions: nvim-bundle.dto.BuildSettings
 --- @field as? string overrides the package name as the file name
 --- @field force? boolean overwrite a file that install did not create
+--- @field dev? boolean record it under `dev_dependencies`
 
 --- @param spec string `repo[@ref]`
 --- @param opts nvim-bundle.deps.InstallOptions
@@ -257,7 +341,7 @@ end
 function M.install(spec, opts)
   local project = load_project()
   local dep = parse(spec)
-  dep.entry, dep.root, dep.exclude = opts.entry, opts.root, opts.exclude
+  dep.entry, dep.root, dep.exclude, dep.dev = opts.entry, opts.root, opts.exclude, opts.dev
   local alias, path = add(project, dep, opts.as, opts.force)
   save_project(project)
   return alias, path
@@ -266,9 +350,9 @@ end
 --- @param alias string
 function M.remove(alias)
   local project = load_project()
-  if not project.manifest.dependencies[alias] then die(alias .. ' is not a dependency') end
-  os.remove(vendored_path(project, alias))
-  project.manifest.dependencies[alias] = nil
+  if not dependencies(project.manifest)[alias] then die(alias .. ' is not a dependency') end
+  os.remove(vendored_path(project_name(project), alias))
+  record(project.manifest, alias, nil)
   project.lock.dependencies[alias] = nil
   save_project(project)
 end
@@ -302,13 +386,13 @@ end
 --- @return string[]
 function M.update(alias)
   local project = load_project()
-  local deps = project.manifest.dependencies
+  local deps = dependencies(project.manifest)
   if alias and not deps[alias] then die(alias .. ' is not a dependency') end
 
   local changes = {}
   for _, name in ipairs(alias and { alias } or sorted_keys(deps)) do
     local entry = project.lock.dependencies[name]
-    local dep = resolve(parse(deps[name]), entry)
+    local dep = resolve(deps[name], entry)
     local move = newer(dep, entry)
     if move then
       dep.ref = move.ref
@@ -326,11 +410,11 @@ end
 --- @return string[]
 function M.outdated()
   local project = load_project()
-  local deps = project.manifest.dependencies
+  local deps = dependencies(project.manifest)
   local lines = {}
   for _, alias in ipairs(sorted_keys(deps)) do
     local entry = project.lock.dependencies[alias]
-    local dep = resolve(parse(deps[alias]), entry)
+    local dep = resolve(deps[alias], entry)
     local move = newer(dep, entry)
     if dep.kind == 'rev' then
       lines[#lines + 1] = ('%s is pinned to %s'):format(alias, short(dep.ref))
@@ -346,13 +430,14 @@ end
 --- Decide what each dependency needs before touching anything, so a frozen
 --- run can report the whole plan and leave every file as it was.
 --- @param project nvim-bundle.deps.Project
+--- @param deps table<string, nvim-bundle.deps.Dependency> both manifest sections
 --- @return { action: nvim-bundle.deps.SyncAction, alias: string }[]
-local function plan_sync(project)
+local function plan_sync(project, deps)
   local plan = {}
-  for _, alias in ipairs(sorted_keys(project.manifest.dependencies)) do
+  for _, alias in ipairs(sorted_keys(deps)) do
     local entry = project.lock.dependencies[alias]
-    local current = files.read(vendored_path(project, alias))
-    if not entry or not locked(parse(project.manifest.dependencies[alias]), entry) then
+    local current = files.read(vendored_path(project_name(project), alias))
+    if not entry or not locked(deps[alias], entry) then
       plan[#plan + 1] = { action = 'resolve', alias = alias }
     elseif not current or vim.fn.sha256(current) ~= entry.sha256 then
       plan[#plan + 1] = { action = 'restore', alias = alias }
@@ -362,9 +447,7 @@ local function plan_sync(project)
   -- Only files the lock knows were vendored by install, so a hand-written
   -- module that happens to live in `vendor/` is never deleted.
   for _, alias in ipairs(sorted_keys(project.lock.dependencies)) do
-    if not project.manifest.dependencies[alias] then
-      plan[#plan + 1] = { action = 'remove', alias = alias }
-    end
+    if not deps[alias] then plan[#plan + 1] = { action = 'remove', alias = alias } end
   end
   return plan
 end
@@ -378,7 +461,8 @@ end
 --- @return string[]
 function M.sync(opts)
   local project = load_project()
-  local plan = plan_sync(project)
+  local deps = dependencies(project.manifest)
+  local plan = plan_sync(project, deps)
   if opts and opts.frozen and #plan > 0 then
     local would = vim.tbl_map(
       function(step) return ('would %s %s'):format(step.action, step.alias) end,
@@ -391,12 +475,12 @@ function M.sync(opts)
   local changes = {}
   for _, step in ipairs(plan) do
     local alias = step.alias
-    local path = vendored_path(project, alias)
+    local path = vendored_path(project_name(project), alias)
     if step.action == 'remove' then
       os.remove(path)
       project.lock.dependencies[alias] = nil
     else
-      local dep = parse(project.manifest.dependencies[alias])
+      local dep = deps[alias]
       if step.action == 'resolve' then
         add(project, dep, alias)
       else

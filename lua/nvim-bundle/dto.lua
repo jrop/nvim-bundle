@@ -69,15 +69,35 @@ M.DependencyObject = guard.object(
 --- A manifest entry: `repo[@ref]`, or an object when it has build settings.
 M.ManifestDependency = by_type { string = guard.string(), table = M.DependencyObject }
 
+--- Both sections vendor to `vendor/<alias>.lua`, so one alias in both would
+--- name one file twice.
+--- @param manifest nvim-bundle.dto.Manifest
+--- @return boolean
+local function has_disjoint_sections(manifest)
+  for alias in pairs(manifest.dev_dependencies) do
+    if manifest.dependencies[alias] then return false end
+  end
+  return true
+end
+
 --- Unknown top-level keys pass through, so a rewrite keeps whatever else the
 --- user keeps in the file.
-M.Manifest = guard.object {
-  name = guard.string():optional(),
-  dependencies = default(
-    guard.record(guard.string(), M.ManifestDependency),
-    function() return {} end
-  ),
-}
+M.Manifest = guard
+  .object({
+    name = guard.string():optional(),
+    dependencies = default(
+      guard.record(guard.string(), M.ManifestDependency),
+      function() return {} end
+    ),
+    dev_dependencies = default(
+      guard.record(guard.string(), M.ManifestDependency),
+      function() return {} end
+    ),
+  })
+  :invariant(
+    has_disjoint_sections,
+    'An alias is listed in dependencies or dev_dependencies, not both'
+  )
 
 --- What one dependency resolved to. The lock is written by nvim-bundle, so an
 --- unknown key means the file was edited or comes from another version.
