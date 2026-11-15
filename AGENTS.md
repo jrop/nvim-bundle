@@ -147,6 +147,14 @@ explanation instead.
   `require` of the bundle look nil-able. A module that returns nothing is
   cached as `true`, as `require` does. Wrappers are never reassigned, so
   `pcall` inference still has a stable function to look at.
+- The `__loaded` cache lives in `package.loaded` under
+  `nvim-bundle:<real path>:<line>`, so a file executed twice (`nvim -l`, then a
+  spec's `require` of the same file) builds each library module once; the line
+  keeps a nested bundle's cache apart. The entry's body is the named
+  `__entry(arg, ...)`: when the entry is already cached, the last line calls it
+  directly with an empty `arg`, because the first execution may still be
+  running it. The bundle reads `vim` through `rawget`, so the emitted code
+  type-checks without Neovim's stubs.
 - `build <entry>` ends the bundle with `return __mods.<field>(<id>)`, so
   requiring it behaves like requiring the module. `build` with no entry
   returns a registry of lazy loaders instead, named after the root's one

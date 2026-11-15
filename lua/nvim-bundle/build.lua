@@ -156,8 +156,30 @@ local function generate(sources, ids, entry_id, bin, define)
   -- as `true`, and a module still loading holds a marker. The generic `T`
   -- carries each module's return type through the loader, which the type
   -- checker could not infer from a cache it sees assigned only later.
-  emit 'local __loaded = {}'
-  emit 'local __LOADING = {}'
+  --
+  -- The cache belongs to the file, not to one execution of it. A CLI run with
+  -- `nvim -l` leaves `package.loaded` empty, so a spec that requires the same
+  -- file executes it again, and a cache per execution would build every module
+  -- twice. Both executions resolve the same real path, and the line of the
+  -- lookup tells apart a nested bundle, whose source is the outer bundle's
+  -- file. The marker is shared too, so one execution recognizes a module that
+  -- the other is still loading. A chunk not loaded from a file has no path to
+  -- share, so it keeps a private cache, and so does a host without Neovim,
+  -- which has no `vim.uv` to resolve the path. `rawget` reads `vim` without
+  -- declaring the bundle dependent on Neovim's type stubs.
+  emit '---@return { loaded: table<string, any>, LOADING: table }'
+  emit 'local function __cache()'
+  emit '  local private = { loaded = {}, LOADING = {} }'
+  emit "  local nvim, info = rawget(_G, 'vim'), debug.getinfo(1, 'Sl')"
+  emit "  if not nvim or not info or info.source:sub(1, 1) ~= '@' then return private end"
+  emit '  local path = nvim.uv.fs_realpath(info.source:sub(2))'
+  emit '  if not path then return private end'
+  emit "  local key = ('nvim-bundle:%s:%d'):format(path, info.currentline)"
+  emit '  package.loaded[key] = package.loaded[key] or private'
+  emit '  return package.loaded[key]'
+  emit 'end'
+  emit 'local __cached = __cache()'
+  emit 'local __loaded, __LOADING = __cached.loaded, __cached.LOADING'
   emit '---@generic T'
   emit '---@param id string'
   emit '---@param load fun(...): T'
@@ -180,31 +202,49 @@ local function generate(sources, ids, entry_id, bin, define)
     local field = fields_by_id[id]
     local src = transform.run(read_source(file.path), file.path, build)
 
-    -- The function value never changes, so pcall/xpcall can infer the
-    -- module's return type through it.
     emit ''
-    emit(('__mods.%s = function(...)'):format(field))
-    emit(('  return __load(%q, function(...)'):format(id))
-    -- Every module shares the bundle's source path, so a library's main guard
-    -- (its source compared with `arg[0]`) would pass when the bundle runs. Only
-    -- the entry can be the script, so every other module sees `arg` as plain
-    -- plugin code in Neovim does: an empty table. The local shadows the global
-    -- lexically, which also covers a check made after loading and every module
-    -- of a nested bundle.
-    if id ~= entry_id then
+    if id == entry_id then
+      -- The entry's body is a named function, because the bundle's last line
+      -- calls it without the cache when the file runs again. It takes `arg` as
+      -- a parameter, so each caller decides whether the entry is the script.
+      -- The wrapper still never changes, so pcall/xpcall can infer the
+      -- module's return type through it.
+      emit '---@param arg string[]'
+      emit 'local function __entry(arg, ...)'
+      emit(src)
+      emit 'end'
+      emit(('__mods.%s = function(...) return __load(%q, __entry, arg, ...) end'):format(field, id))
+    else
+      emit(('__mods.%s = function(...)'):format(field))
+      emit(('  return __load(%q, function(...)'):format(id))
+      -- Every module shares the bundle's source path, so a library's main
+      -- guard (its source compared with `arg[0]`) would pass when the bundle
+      -- runs. Only the entry can be the script, so every other module sees
+      -- `arg` as plain plugin code in Neovim does: an empty table. The local
+      -- shadows the global lexically, which also covers a check made after
+      -- loading and every module of a nested bundle.
       emit '---@type string[]'
       emit 'local arg = {}'
+      emit(src)
+      emit '  end, ...)'
+      emit 'end'
     end
-    emit(src)
-    emit '  end, ...)'
-    emit 'end'
   end
 
   -- Returning the entry's value makes requiring the bundle behave like
   -- requiring the entry source, and executing a bin bundle lets the entry's own
   -- main guard decide whether to run.
+  --
+  -- An entry already in the cache means an earlier execution of this file ran
+  -- it, so this execution is a `require` of a file that has already run, such
+  -- as a spec requiring the CLI that runs it. `require` on unbundled source
+  -- evaluates the file again but reuses every library from `package.loaded`,
+  -- so the bundle evaluates the entry again with the shared libraries. The
+  -- entry then sees an empty `arg`, as a library does, so its main guard does
+  -- not start the CLI a second time.
   if entry_id then
     emit ''
+    emit(('if __loaded[%q] ~= nil then return __entry({}, ...) end'):format(entry_id))
     emit(('return __mods.%s(%q)'):format(fields_by_id[entry_id], entry_id))
     return table.concat(out, '\n')
   end

@@ -294,8 +294,8 @@ local function stub_host_module(name, value) rawset(package.loaded, name, value)
 --- Bundle `src` as the entry module `entry`, with `files` beside it, and run
 --- the bundle. Returns what the module returned or the error it raised, the
 --- module's emitted source, and, for an error, its line in `src`. The emitted
---- source starts on the line after the module's `__load` line, so subtracting
---- that line maps a bundle line to a source line.
+--- source starts on the line after the entry's function header, so
+--- subtracting that line maps a bundle line to a source line.
 --- @param src string
 --- @param define table<string, string>?
 --- @param files table<string, string>? other fixture files
@@ -304,11 +304,16 @@ local function run_entry(src, define, files)
   local root = fixture(vim.tbl_extend('error', { ['entry.lua'] = src }, files or {}))
   local chunk, result = compile_bundle(root, 'entry', { define = define })
   local lines = vim.split(slurp(result.out), '\n', { plain = true })
-  local header = vim.fn.index(lines, '  return __load("entry", function(...)') + 1
+  local header = vim.fn.index(lines, 'local function __entry(arg, ...)') + 1
   assert(header > 0, 'no entry module in ' .. result.out)
-  -- `index` counts from 0 and `header` from 1, so this search starts on the
-  -- line after the header.
-  local footer = vim.fn.index(lines, '  end, ...)', header) + 1
+  -- The body's closing `end` is the line before the wrapper. `index` counts
+  -- from 0 and `header` from 1, so this search starts on the line after the
+  -- header, and the 0-based wrapper index is the 1-based `end` line.
+  local footer = vim.fn.index(
+    lines,
+    '__mods._entry = function(...) return __load("entry", __entry, arg, ...) end',
+    header
+  )
   local module = table.concat(lines, '\n', header + 1, footer - 1)
 
   local ok, value = pcall(chunk)

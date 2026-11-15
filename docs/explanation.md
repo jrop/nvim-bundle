@@ -38,6 +38,8 @@ every `require` of the bundle would look like it might return `nil`. The
 loader's `fun(...): T` parameter instead hands each module's own return type
 back to the caller. A require cycle raises
 `loop or previous error loading module '<name>'` instead of recursing forever.
+The cache belongs to the bundle file rather than to one execution of it; see
+[Why a file executed again shares its modules](#why-a-file-executed-again-shares-its-modules).
 
 The file's last line decides what requiring it returns. Naming a module ends
 the file with a call to that module's function, so the bundle behaves like
@@ -58,7 +60,7 @@ return {
 ```
 
 Either way, the language server follows the returned call or the indexed
-loader to the module's type, and the bundle itself is the only value the
+loader to the module's type, and the bundle itself is the only module the
 host's `require` caches.
 
 ### Field names
@@ -142,6 +144,69 @@ The alternatives were rejected because they preserve less or cost more:
 - Loading each module as its own chunk with its original name would preserve
   `debug.getinfo` exactly. That needs sources stored as strings, which would
   hide their annotations from the language server.
+
+### Why a file executed again shares its modules
+
+Executing a bundle file a second time should cost what requiring the unbundled
+source would: the entry is evaluated again, and every library is reused. An
+example of a second execution is a busted-like CLI, `test`, whose specs
+register their cases through `require 'test'`:
+
+1. `nvim -l lua/test.lua spec/a_spec.lua` executes the bundle as a script.
+   Running a script never writes `package.loaded`, so `test` has no entry
+   there.
+2. The entry's main guard passes, so the CLI starts inside the entry's body and
+   runs the spec.
+3. The spec's `require 'test'` finds no `package.loaded` entry, so it executes
+   the bundle file a second time.
+
+Each execution of a Lua file creates its locals again. So if the module cache
+were a local of the file, the second execution would build a second copy of
+every module, and the spec would register its cases in a `test.state` that the
+running CLI never reads.
+
+The cache therefore lives in `package.loaded`, under a key made from the
+file's resolved path and the line that looks it up:
+
+```lua
+package.loaded['nvim-bundle:/home/me/proj/lua/test.lua:7']
+-- = { loaded = { ['test.state'] = <state>, test = <loading marker> }, LOADING = <marker> }
+```
+
+- The first execution sees the relative path `lua/test.lua`, while `require`
+  sees an absolute one, so the key uses the real path, which both resolve to.
+- A nested bundle's source is the outer bundle's file, so the line tells the
+  two caches apart. Both bundles can hold a module named `util`, and each must
+  keep its own.
+- The loading marker is shared too, so the second execution can recognize the
+  entry that the first is still running.
+
+The entry itself cannot be shared. The first execution only stores its value
+when its body returns, and its body is still running the CLI. So when the
+bundle finds its entry already in the cache, it evaluates the entry again,
+outside the cache, and passes it an empty `arg`. The empty table is the answer
+a library gets (see
+[Why libraries see an empty `arg`](#why-libraries-see-an-empty-arg)), so the
+second evaluation's main guard is false, and the CLI does not start again.
+`require` then caches the second evaluation's value under the name the spec
+used.
+
+This matches unbundled source, and it has the same limits:
+
+- State that the entry keeps in its own locals is a second copy, because the
+  entry is evaluated twice. A spec that writes to such state is not seen by
+  the running CLI. State kept in a library module is shared.
+- Clearing a bundle's `package.loaded` entry and requiring it again evaluates
+  only the entry again. Every library module is reused, as it would be from
+  `package.loaded` for the source.
+- The bundler cannot store the running entry's value early on its behalf,
+  because only the module knows when that value is complete. A module that
+  needs the spec to receive the exact table the CLI uses must store it in
+  `package.loaded` itself before its main guard runs.
+
+A chunk loaded from a string has no file path to share, and a host without
+Neovim has no `vim.uv` to resolve one. In both cases the bundle keeps a private
+cache, so each execution builds its own modules.
 
 ## Why some requires stay dynamic
 

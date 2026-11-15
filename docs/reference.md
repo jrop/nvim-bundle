@@ -330,7 +330,16 @@ named module's value or, with no module, a registry table keyed by module id.
   id. For example, `myplugin.util` becomes `__mods._myplugin_util`.
 - A resolved `require 'myplugin.util'` becomes a direct call to that function.
 - A call the linker cannot resolve remains a host `require` call.
-- A bundled module is evaluated at most once and caches its value.
+- A bundled module is evaluated at most once per bundle file and caches its
+  value. The cache is stored in `package.loaded` under
+  `nvim-bundle:<real path>:<line>`, so executing the same file again, for
+  example with `nvim -l` and then `require`, reuses every library module. A
+  chunk loaded from a string, or run outside Neovim, keeps a private cache.
+- A file executed again evaluates its entry again, outside the cache and with
+  an empty `arg`, because the entry's value from the earlier execution may not
+  exist yet. State local to the entry is therefore not shared, as with
+  `require` on the source; see
+  [Why a file executed again shares its modules](explanation.md#why-a-file-executed-again-shares-its-modules).
 - A require cycle raises `loop or previous error loading module '<name>'`.
 - A bundle that returns a module evaluates that module, and only what it
   statically requires, when it is required. Installing `build myplugin`'s
@@ -354,8 +363,9 @@ named module's value or, with no module, a registry table keyed by module id.
   module's type. This is less ergonomic than a callable `bundle('id')`, but the
   call form would need a written return type for every module; see
   [When to choose a registry](explanation.md#when-to-choose-a-registry).
-- In both shapes the bundle's modules are private: the host only caches the
-  bundle itself under the bundle's name.
+- In both shapes the bundle's modules are private: the host caches only the
+  bundle itself under the bundle's name, and the module cache under a key that
+  is not a module name.
 - The header records the shape as `-- returns: <entry>` or
   `-- returns: registry`.
 - Every module except the returned one sees `arg` as an empty table, so a

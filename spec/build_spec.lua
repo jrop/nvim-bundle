@@ -240,6 +240,90 @@ describe('bin bundles', function()
   end)
 end)
 
+describe('a file executed again', function()
+  -- A busted-like CLI: `test` runs each spec file it is given, and a spec
+  -- registers its cases through `require 'test'`, which executes the bundle a
+  -- second time because `nvim -l` leaves `package.loaded` empty. The bundle is
+  -- installed as `lua/test.lua` on the runtimepath, so the spec's `require`
+  -- finds it, not the source.
+  --- @param files table<string, string> the CLI's sources, beside `spec.lua`
+  --- @return string stdout
+  local function run_cli(files)
+    local root = fixture(vim.tbl_extend('error', {
+      ['spec.lua'] = table.concat({
+        'local t = require "test"',
+        't.it("works")',
+        't.it_local("works")',
+        '',
+      }, '\n'),
+    }, files))
+    local out = root .. '-out/lua/test.lua'
+    run_ok { 'build', '--root', root, '--out', out, '--exclude', 'spec.lua', 'test' }
+    local cmd = {
+      'nvim',
+      '--clean',
+      '--cmd',
+      'set rtp^=' .. root .. '-out',
+      '-l',
+      out,
+      root .. '/spec.lua',
+    }
+    local proc = vim.system(cmd, { text = true }):wait()
+    assert.are.equal(0, proc.code, proc.stderr)
+    return proc.stdout or ''
+  end
+
+  local cli = main_guarded(
+    'local state = require "test.state"',
+    'local M = {}',
+    'local own = {}',
+    'function M.it(name) table.insert(state.cases, name) end',
+    'function M.it_local(name) table.insert(own, name) end',
+    'function M.main()',
+    '  dofile(arg[1])',
+    '  io.stdout:write(("cases %d, entry-local %d\\n"):format(#state.cases, #own))',
+    'end'
+  )
+
+  it('shares every library module with the script run', function()
+    local stdout = run_cli {
+      ['test.lua'] = cli,
+      ['test/state.lua'] = 'io.stdout:write("state loaded\\n")\nreturn { cases = {} }\n',
+    }
+
+    assert.are.equal('state loaded\ncases 1, entry-local 0\n', stdout)
+  end)
+
+  -- The spec's `require` cannot return the script run's entry, which is still
+  -- running its CLI, so the entry is evaluated again and its own locals are a
+  -- second copy. This matches `require` on the unbundled source.
+  it('evaluates the entry again, so state local to the entry is not shared', function()
+    local stdout = run_cli {
+      ['test.lua'] = cli,
+      ['test/state.lua'] = 'return { cases = {} }\n',
+    }
+
+    assert.is_truthy(stdout:find('entry-local 0', 1, true), stdout)
+  end)
+
+  it('keeps a nested bundle cache apart from the outer one', function()
+    -- Both bundles hold a module `util`, so a shared cache would hand the
+    -- inner bundle the outer `util`.
+    local inner = fixture {
+      ['lib.lua'] = 'return { util = require "util" }\n',
+      ['util.lua'] = 'return "inner"\n',
+    }
+    local _, built = compile_bundle(inner, 'lib')
+    local root = fixture {
+      ['entry.lua'] = 'local util = require "util"\nreturn { util, require("vendor.lib").util }\n',
+      ['util.lua'] = 'return "outer"\n',
+      ['vendor/lib.lua'] = slurp(built.out),
+    }
+
+    assert.are.same({ 'outer', 'inner' }, compile_bundle(root, 'entry')())
+  end)
+end)
+
 describe('registry', function()
   it('loads each bundled module once and returns its value', function()
     local root = fixture {
