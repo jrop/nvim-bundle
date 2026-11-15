@@ -1,22 +1,4 @@
---- @diagnostic disable: need-check-nil
---- @diagnostic disable: undefined-field
-
--- Under `busted --coverage`, luacov's tick interval flushes every 100 hits, but
--- the parent test process exits through Neovim rather than Lua's os.exit, so
--- the final partial batch would be lost without this save.
-if package.loaded['luacov.runner'] then
-  ---@type { save_stats: fun() }
-  local runner = package.loaded['luacov.runner']
-  vim.api.nvim_create_autocmd('VimLeavePre', {
-    callback = function() runner.save_stats() end,
-  })
-end
-
--- Busted gives `assert` its matchers only inside spec files, while a module
--- they require sees the plain Lua function. The type stubs declare only the
--- global, so the module itself does not resolve.
----@diagnostic disable-next-line: unresolved-require
-local assert = require 'luassert'
+local assert = require('nvim-bundle.vendor.test').assert
 
 --- What every spec file shares: fixture trees, the CLI run in a child Neovim,
 --- and local git remotes. Each case writes a small source tree to a temporary
@@ -62,6 +44,56 @@ local function slurp(path)
   return content
 end
 
+-- Most of nvim-bundle runs in the CLI's child Neovim, which test.nvim cannot
+-- reach: it counts lines only in the children it starts itself. So under
+-- `--coverage`, each CLI child records the lines it runs with the same line
+-- hook, writes them to a file as it exits, and `cli` merges them into the
+-- table test.nvim reports from, `__test_coverage_hits[source][line]`. The
+-- child exits through Neovim, not Lua's `os.exit`, so `VimLeavePre` is the one
+-- exit that every run reaches.
+local CHILD_COVERAGE = [[
+local hits = {}
+debug.sethook(function(_, line)
+  local info = debug.getinfo(2, 'S')
+  if not info then return end
+  hits[info.source] = hits[info.source] or {}
+  hits[info.source][line] = true
+end, 'l')
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  callback = function()
+    debug.sethook()
+    local out = {}
+    for source, lines in pairs(hits) do
+      out[source] = vim.tbl_keys(lines)
+    end
+    local f = assert(io.open(vim.env.NVIM_BUNDLE_COVERAGE, 'wb'))
+    f:write(vim.json.encode(out))
+    f:close()
+  end,
+})
+]]
+
+--- The script a coverage run's CLI children load first, written once per run.
+--- @type string?
+local child_coverage_script
+
+--- @param path string what the child wrote; it is removed once merged
+--- @param hits table<string, table<integer, true>> test.nvim's table
+local function merge_child_coverage(path, hits)
+  local f = io.open(path, 'rb')
+  if not f then return end
+  local content = f:read '*a'
+  f:close()
+  local recorded = vim.json.decode(content) --[[@as table<string, integer[]>]]
+  os.remove(path)
+  for source, lines in pairs(recorded) do
+    hits[source] = hits[source] or {}
+    for _, line in ipairs(lines) do
+      hits[source][line] = true
+    end
+  end
+end
+
 --- Run the CLI in a child Neovim, so every test exercises the same entry point
 --- a user does.
 --- @param argv string[]
@@ -69,32 +101,31 @@ end
 --- @return vim.SystemCompleted
 local function cli(argv, env)
   local cmd = { 'nvim', '--clean' }
-  -- Under `busted --coverage`, instrument the child so its CLI lines count.
-  if package.loaded['luacov.runner'] then
-    cmd[#cmd + 1] = '--cmd'
-    cmd[#cmd + 1] = 'lua require("luacov")'
-    -- The child runs too few instrumented lines to reach luacov's tick
-    -- interval, and Neovim does not exit through Lua's os.exit, so save at the
-    -- event Neovim does emit.
-    cmd[#cmd + 1] = '--cmd'
-    cmd[#cmd + 1] = 'autocmd VimLeavePre * lua require("luacov.runner").save_stats()'
+  -- test.nvim creates the table when a coverage run starts.
+  local hits = rawget(_G, '__test_coverage_hits') --[[@as table<string, table<integer, true>>?]]
+  local recorded = hits and vim.fn.tempname()
+  if recorded then
+    if not child_coverage_script then
+      child_coverage_script = vim.fn.tempname() .. '.lua'
+      local f = assert(io.open(child_coverage_script, 'wb'))
+      f:write(CHILD_COVERAGE)
+      f:close()
+    end
+    vim.list_extend(cmd, { '--cmd', 'luafile ' .. child_coverage_script })
+    env = vim.tbl_extend('force', env or {}, { NVIM_BUNDLE_COVERAGE = recorded })
   end
-  cmd[#cmd + 1] = '-l'
-  -- Keep this relative. luacov keys stats by the path string a chunk was loaded
-  -- from, so the parent's relative `lua/nvim-bundle.lua` and the child's
-  -- absolute path would appear as two files in the coverage report.
-  cmd[#cmd + 1] = 'lua/nvim-bundle.lua'
-  for _, arg in ipairs(argv) do
-    cmd[#cmd + 1] = arg
-  end
-  return vim.system(cmd, { text = true, env = env }):wait()
+  vim.list_extend(cmd, { '-l', 'lua/nvim-bundle.lua' })
+  vim.list_extend(cmd, argv)
+  local proc = vim.system(cmd, { text = true, env = env }):wait()
+  if hits and recorded then merge_child_coverage(recorded, hits) end
+  return proc
 end
 
 --- @param stdout string
 --- @return spec.helpers.CliResult
 local function parse_summary(stdout)
   local modules, out, shape = stdout:match '^bundled (%d+) modules into (.-)%s+%((.-)%)%s*$'
-  assert.is_truthy(modules, ('unexpected CLI output: %q'):format(stdout))
+  assert.ok(modules, ('unexpected CLI output: %q'):format(stdout))
   --- @cast modules string
   --- @cast out string
   --- @cast shape string
@@ -109,7 +140,7 @@ end
 --- @return spec.helpers.CliResult
 local function run_ok(argv)
   local proc = cli(argv)
-  assert.are.equal(0, proc.code, proc.stderr)
+  assert.equal(proc.code, 0, proc.stderr)
   return parse_summary(proc.stdout or '')
 end
 
@@ -117,9 +148,9 @@ end
 --- @return string
 local function run_help(argv)
   local proc = cli(argv)
-  assert.are.equal(0, proc.code, proc.stderr)
+  assert.equal(proc.code, 0, proc.stderr)
   local stdout = proc.stdout or ''
-  assert.is_truthy(stdout:find('Usage:', 1, true), stdout)
+  assert.contains(stdout, 'Usage:')
   return stdout
 end
 
@@ -127,21 +158,17 @@ end
 --- @param pattern string
 local function run_fail(argv, pattern)
   local proc = cli(argv)
-  assert.are.equal(1, proc.code, proc.stdout)
+  assert.equal(proc.code, 1, proc.stdout)
   local stderr = proc.stderr or ''
-  assert.is_truthy(
-    stderr:find(pattern, 1, true),
-    ('expected %q in error %q'):format(pattern, stderr)
-  )
+  assert.contains(stderr, pattern)
 end
 
---- Load the module under test directly with the same relative chunk name that
---- the `.busted` lpath and the CLI child use, so luacov merges every run into
---- one report row.
+--- Load the module under test directly, from the same path the CLI child
+--- runs, so both count toward one file in a coverage report.
 --- @return table
 local function load_module()
   local chunk, err = loadfile 'lua/nvim-bundle.lua'
-  assert.is_truthy(chunk, err)
+  assert.ok(chunk, err)
   --- @cast chunk function
   return chunk()
 end
@@ -150,7 +177,7 @@ end
 --- @return function
 local function load_bundle(path)
   local chunk, err = loadstring(slurp(path), '@' .. path)
-  assert.is_truthy(chunk, err)
+  assert.ok(chunk, err)
   --- @cast chunk function
   return chunk
 end
@@ -171,11 +198,12 @@ local function compile_bundle(root, entry, opts)
     argv[#argv + 1] = '--exclude'
     argv[#argv + 1] = glob
   end
-  local keys = vim.tbl_keys(opts.define or {})
+  local define = opts.define or {}
+  local keys = vim.tbl_keys(define)
   table.sort(keys)
   for _, key in ipairs(keys) do
     argv[#argv + 1] = '--define'
-    argv[#argv + 1] = key .. '=' .. opts.define[key]
+    argv[#argv + 1] = key .. '=' .. define[key]
   end
   argv[#argv + 1] = entry
 
@@ -222,7 +250,7 @@ local function git(cwd, argv)
   local cmd = { 'git', '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false' }
   vim.list_extend(cmd, argv)
   local proc = vim.system(cmd, { cwd = cwd, text = true }):wait()
-  assert.are.equal(0, proc.code, proc.stderr)
+  assert.equal(proc.code, 0, proc.stderr)
   return vim.trim(proc.stdout or '')
 end
 
@@ -281,7 +309,7 @@ local function install(project, argv, env)
   local cmd = { '-C', project, 'install' }
   vim.list_extend(cmd, argv)
   local proc = cli(cmd, env)
-  assert.are.equal(0, proc.code, proc.stderr)
+  assert.equal(proc.code, 0, proc.stderr)
 end
 
 --- Pre-load a host module, which a bundle must fall back to for any require it

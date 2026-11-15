@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local slurp = h.slurp
@@ -24,10 +25,10 @@ describe('install', function()
     install(project, { dep.url .. '@v1.0.0' })
 
     local vendored = slurp(project .. '/lua/myplug/vendor/dep.lua')
-    assert.are.equal('---@diagnostic disable\n', vendored:sub(1, 23))
-    assert.are.equal('dep', require_vendored(project, 'dep'))
+    assert.equal(vendored:sub(1, 23), '---@diagnostic disable\n')
+    assert.equal(require_vendored(project, 'dep'), 'dep')
     local lock = read_json(project .. '/nvim-bundle.lock.json')
-    assert.are.equal(vim.fn.sha256(vendored), lock.dependencies.dep.sha256)
+    assert.equal(lock.dependencies.dep.sha256, vim.fn.sha256(vendored))
   end)
 
   it('vendors a dependency built from its tag', function()
@@ -43,12 +44,12 @@ describe('install', function()
     -- With no entry, the bundle is a registry, as `build` makes, and
     -- `dep.util` resolves statically although the host cannot see it.
     local vendored = project .. '/lua/myplug/vendor/dep.lua'
-    assert.are.equal('dep-util', load_bundle(vendored)()['dep']().util)
-    assert.are.same({
+    assert.equal(load_bundle(vendored)()['dep']().util, 'dep-util')
+    assert.deep_equal(read_json(project .. '/nvim-bundle.json'), {
       name = 'myplug',
       dependencies = { dep = dep.url .. '@v1.0.0' },
-    }, read_json(project .. '/nvim-bundle.json'))
-    assert.are.same({
+    })
+    assert.deep_equal(read_json(project .. '/nvim-bundle.lock.json'), {
       lock_version = 1,
       dependencies = {
         dep = {
@@ -60,7 +61,7 @@ describe('install', function()
           sha256 = vim.fn.sha256(slurp(vendored)),
         },
       },
-    }, read_json(project .. '/nvim-bundle.lock.json'))
+    })
   end)
 
   it("ignores the build settings in the dependency's own nvim-bundle.json", function()
@@ -77,7 +78,7 @@ describe('install', function()
 
     local vendored = project .. '/lua/myplug/vendor/dep.lua'
     assert.is_nil(slurp(vendored):match '^#!')
-    assert.are.equal('dep', require_vendored(project, 'dep'))
+    assert.equal(require_vendored(project, 'dep'), 'dep')
   end)
 
   it('expands owner/repo to its GitHub URL', function()
@@ -95,14 +96,11 @@ describe('install', function()
 
     install(project, { 'jrop/dep.nvim@v1.0.0' }, env)
 
-    assert.are.equal('dep', require_vendored(project, 'dep'))
-    assert.are.equal(
-      'jrop/dep.nvim@v1.0.0',
-      read_json(project .. '/nvim-bundle.json').dependencies.dep
-    )
-    assert.are.equal(
-      'https://github.com/jrop/dep.nvim',
-      read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.source
+    assert.equal(require_vendored(project, 'dep'), 'dep')
+    assert.equal(read_json(project .. '/nvim-bundle.json').dependencies.dep, 'jrop/dep.nvim@v1.0.0')
+    assert.equal(
+      read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.source,
+      'https://github.com/jrop/dep.nvim'
     )
   end)
 
@@ -115,11 +113,8 @@ describe('install', function()
 
     install(project, { dep.url })
 
-    assert.are.equal('v0.10.0', require_vendored(project, 'dep'))
-    assert.are.equal(
-      dep.url .. '@v0.10.0',
-      read_json(project .. '/nvim-bundle.json').dependencies.dep
-    )
+    assert.equal(require_vendored(project, 'dep'), 'v0.10.0')
+    assert.equal(read_json(project .. '/nvim-bundle.json').dependencies.dep, dep.url .. '@v0.10.0')
   end)
 
   it('follows a branch named after @', function()
@@ -129,17 +124,17 @@ describe('install', function()
     install(project, { dep.url .. '@main' })
 
     local locked = read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
-    assert.are.equal('main', locked.ref)
-    assert.are.equal('branch', locked.kind)
-    assert.are.equal(old, locked.commit)
+    assert.equal(locked.ref, 'main')
+    assert.equal(locked.kind, 'branch')
+    assert.equal(locked.commit, old)
 
     local new = dep.commit { ['lua/dep/init.lua'] = 'return "new"\n' }
     local proc = cli { '-C', project, 'update' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal(('updated dep %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)), proc.stdout)
-    assert.are.equal('new', require_vendored(project, 'dep'))
-    assert.are.equal(dep.url .. '@main', read_json(project .. '/nvim-bundle.json').dependencies.dep)
+    assert.equal(proc.stdout, ('updated dep %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)))
+    assert.equal(require_vendored(project, 'dep'), 'new')
+    assert.equal(read_json(project .. '/nvim-bundle.json').dependencies.dep, dep.url .. '@main')
   end)
 
   it('pins a full commit SHA named after @', function()
@@ -150,12 +145,12 @@ describe('install', function()
 
     install(project, { dep.url .. '@' .. first })
 
-    assert.are.equal('first', require_vendored(project, 'dep'))
+    assert.equal(require_vendored(project, 'dep'), 'first')
     local locked = read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
-    assert.are.equal('rev', locked.kind)
-    assert.are.equal(first, locked.commit)
+    assert.equal(locked.kind, 'rev')
+    assert.equal(locked.commit, first)
     local proc = cli { '-C', project, 'outdated' }
-    assert.are.equal(('dep is pinned to %s\n'):format(first:sub(1, 7)), proc.stdout)
+    assert.equal(proc.stdout, ('dep is pinned to %s\n'):format(first:sub(1, 7)))
   end)
 
   it('prefers the tag when a tag and a branch share a name', function()
@@ -167,8 +162,8 @@ describe('install', function()
 
     install(project, { dep.url .. '@same' })
 
-    assert.are.equal('tag', require_vendored(project, 'dep'))
-    assert.are.equal('tag', read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.kind)
+    assert.equal(require_vendored(project, 'dep'), 'tag')
+    assert.equal(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.kind, 'tag')
   end)
 
   it('rejects an @ref that is neither a tag nor a branch', function()
@@ -202,18 +197,19 @@ describe('install', function()
       '--exclude',
       '**/_test/**',
     }
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('installed dep into lua/myplug/vendor/dep.lua\n', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, 'installed dep into lua/myplug/vendor/dep.lua\n')
 
     local vendored = project .. '/lua/myplug/vendor/dep.lua'
-    assert.are.equal('core', load_bundle(vendored)())
-    assert.is_nil(slurp(vendored):find('bundled a test', 1, true))
+    assert.equal(load_bundle(vendored)(), 'core')
+    assert.is_nil((slurp(vendored):find('bundled a test', 1, true)))
     local settings = { entry = 'dep.core', root = 'src', exclude = { '**/_test/**' } }
-    assert.are.same(
-      vim.tbl_extend('error', settings, { repo = dep.url, ref = 'v1.0.0' }),
-      read_json(project .. '/nvim-bundle.json').dependencies.dep
+    assert.deep_equal(
+      read_json(project .. '/nvim-bundle.json').dependencies.dep,
+      vim.tbl_extend('error', settings, { repo = dep.url, ref = 'v1.0.0' })
     )
-    assert.are.same(
+    assert.deep_equal(
+      read_json(project .. '/nvim-bundle.lock.json').dependencies.dep,
       vim.tbl_extend('error', settings, {
         source = dep.url,
         ref = 'v1.0.0',
@@ -221,15 +217,14 @@ describe('install', function()
         commit = commit,
         built_with = cli_version(),
         sha256 = vim.fn.sha256(slurp(vendored)),
-      }),
-      read_json(project .. '/nvim-bundle.lock.json').dependencies.dep
+      })
     )
 
     -- The recorded settings rebuild the same bytes from the lock.
     local bytes = slurp(vendored)
     os.remove(vendored)
     install(project, {})
-    assert.are.equal(bytes, slurp(vendored))
+    assert.equal(slurp(vendored), bytes)
   end)
 
   it('builds with the settings an object entry records', function()
@@ -247,7 +242,7 @@ describe('install', function()
 
     install(project, {})
 
-    assert.are.equal('core', load_bundle(project .. '/lua/myplug/vendor/dep.lua')())
+    assert.equal(load_bundle(project .. '/lua/myplug/vendor/dep.lua')(), 'core')
   end)
 
   it('refuses to overwrite a vendored file that install did not create', function()
@@ -262,7 +257,7 @@ describe('install', function()
       { '-C', project, 'install', dep.url .. '@v1.0.0' },
       'lua/myplug/vendor/dep.lua exists but is not in the lock; move it, pass --as, or pass --force'
     )
-    assert.are.equal('return "mine"\n', slurp(project .. '/lua/myplug/vendor/dep.lua'))
+    assert.equal(slurp(project .. '/lua/myplug/vendor/dep.lua'), 'return "mine"\n')
   end)
 
   it('overwrites a vendored file that install did not create under --force', function()
@@ -275,8 +270,8 @@ describe('install', function()
 
     install(project, { dep.url .. '@v1.0.0', '--force' })
 
-    assert.are.equal('dep', require_vendored(project, 'dep'))
-    assert.is_truthy(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep)
+    assert.equal(require_vendored(project, 'dep'), 'dep')
+    assert.ok(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep)
   end)
 end)
 
@@ -288,12 +283,12 @@ describe('dev dependencies', function()
 
     install(project, { '--dev', dep.url .. '@v1.0.0' })
 
-    assert.are.equal('dep', require_vendored(project, 'dep'))
-    assert.are.same({
+    assert.equal(require_vendored(project, 'dep'), 'dep')
+    assert.deep_equal(read_json(project .. '/nvim-bundle.json'), {
       name = 'myplug',
       dependencies = {},
       dev_dependencies = { dep = dep.url .. '@v1.0.0' },
-    }, read_json(project .. '/nvim-bundle.json'))
+    })
   end)
 
   it('moves an alias installed again without --dev back to dependencies', function()
@@ -305,7 +300,7 @@ describe('dev dependencies', function()
     install(project, { dep.url .. '@v1.0.0' })
 
     local manifest = read_json(project .. '/nvim-bundle.json')
-    assert.are.equal(dep.url .. '@v1.0.0', manifest.dependencies.dep)
+    assert.equal(manifest.dependencies.dep, dep.url .. '@v1.0.0')
     assert.is_nil(manifest.dev_dependencies)
   end)
 
@@ -317,11 +312,11 @@ describe('dev dependencies', function()
     os.remove(project .. '/lua/myplug/vendor/dep.lua')
 
     local proc = cli { '-C', project, 'install' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal('restored dep\n', proc.stdout)
-    assert.are.equal('dep', require_vendored(project, 'dep'))
-    assert.is_truthy(read_json(project .. '/nvim-bundle.json').dev_dependencies.dep)
+    assert.equal(proc.stdout, 'restored dep\n')
+    assert.equal(require_vendored(project, 'dep'), 'dep')
+    assert.ok(read_json(project .. '/nvim-bundle.json').dev_dependencies.dep)
   end)
 
   it('updates a dev dependency and keeps it under dev_dependencies', function()
@@ -332,14 +327,14 @@ describe('dev dependencies', function()
     dep.commit({ ['lua/dep/init.lua'] = 'return "v0.2.0"\n' }, 'v0.2.0')
 
     local outdated = cli { '-C', project, 'outdated' }
-    assert.are.equal('dep v0.1.0 -> v0.2.0\n', outdated.stdout)
+    assert.equal(outdated.stdout, 'dep v0.1.0 -> v0.2.0\n')
     local proc = cli { '-C', project, 'update' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
-    assert.are.same(
-      { dep = dep.url .. '@v0.2.0' },
-      read_json(project .. '/nvim-bundle.json').dev_dependencies
+    assert.equal(require_vendored(project, 'dep'), 'v0.2.0')
+    assert.deep_equal(
+      read_json(project .. '/nvim-bundle.json').dev_dependencies,
+      { dep = dep.url .. '@v0.2.0' }
     )
   end)
 
@@ -350,7 +345,7 @@ describe('dev dependencies', function()
     install(project, { '--dev', dep.url .. '@v1.0.0' })
 
     local proc = cli { '-C', project, 'remove', 'dep' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
     assert.is_nil(vim.uv.fs_stat(project .. '/lua/myplug/vendor/dep.lua'))
     assert.is_nil(read_json(project .. '/nvim-bundle.json').dev_dependencies)
@@ -374,7 +369,7 @@ describe('dev dependencies', function()
     install(project, { dep.url .. '@v1.0.0' })
 
     local registry = load_bundle(project .. '/lua/myplug/vendor/dep.lua')()
-    assert.are.equal('args', registry['dep.vendor.args']())
+    assert.equal(registry['dep.vendor.args'](), 'args')
     assert.is_nil(registry['dep.vendor.test'])
   end)
 end)
@@ -393,7 +388,7 @@ describe('install without arguments', function()
     os.remove(vendored)
     install(project, {})
 
-    assert.are.equal(original, slurp(vendored))
+    assert.equal(slurp(vendored), original)
   end)
 
   it('resolves an entry whose manifest tag was edited', function()
@@ -408,8 +403,8 @@ describe('install without arguments', function()
     write_json(project .. '/nvim-bundle.json', manifest)
     install(project, {})
 
-    assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
-    assert.are.equal('v0.2.0', read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.ref)
+    assert.equal(require_vendored(project, 'dep'), 'v0.2.0')
+    assert.equal(read_json(project .. '/nvim-bundle.lock.json').dependencies.dep.ref, 'v0.2.0')
   end)
 
   it('needs no network when every vendored file matches the lock', function()
@@ -420,8 +415,8 @@ describe('install without arguments', function()
     vim.fn.delete((dep.url:gsub('^file://', '')), 'rf')
 
     local proc = cli { '-C', project, 'install' }
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('dependencies are up to date\n', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, 'dependencies are up to date\n')
   end)
 
   it('fails under --frozen instead of changing anything', function()
@@ -438,8 +433,8 @@ describe('install without arguments', function()
     local lock = slurp(project .. '/nvim-bundle.lock.json')
 
     run_fail({ '-C', project, 'install', '--frozen' }, 'would restore dep')
-    assert.are.equal('return "edited"\n', slurp(vendored))
-    assert.are.equal(lock, slurp(project .. '/nvim-bundle.lock.json'))
+    assert.equal(slurp(vendored), 'return "edited"\n')
+    assert.equal(slurp(project .. '/nvim-bundle.lock.json'), lock)
   end)
 
   it('removes a vendored file whose dependency left the manifest', function()
@@ -461,11 +456,11 @@ describe('install without arguments', function()
 
     local vendor_dir = project .. '/lua/myplug/vendor/'
     assert.is_nil(vim.uv.fs_stat(vendor_dir .. 'drop.lua'))
-    assert.is_truthy(vim.uv.fs_stat(vendor_dir .. 'keep.lua'))
-    assert.is_truthy(vim.uv.fs_stat(vendor_dir .. 'handwritten.lua'))
-    assert.are.same(
-      { 'keep' },
-      vim.tbl_keys(read_json(project .. '/nvim-bundle.lock.json').dependencies)
+    assert.ok(vim.uv.fs_stat(vendor_dir .. 'keep.lua'))
+    assert.ok(vim.uv.fs_stat(vendor_dir .. 'handwritten.lua'))
+    assert.deep_equal(
+      vim.tbl_keys(read_json(project .. '/nvim-bundle.lock.json').dependencies),
+      { 'keep' }
     )
   end)
 end)
@@ -478,7 +473,7 @@ describe('remove', function()
     install(project, { dep.url .. '@v1.0.0' })
 
     local proc = cli { '-C', project, 'remove', 'dep' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
     assert.is_nil(vim.uv.fs_stat(project .. '/lua/myplug/vendor/dep.lua'))
     assert.is_nil(next(read_json(project .. '/nvim-bundle.json').dependencies))
@@ -500,14 +495,11 @@ describe('update', function()
     install(project, { dep.url .. '@v0.1.0' })
 
     local proc = cli { '-C', project, 'update' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal('updated dep v0.1.0 -> v0.2.0\n', proc.stdout)
-    assert.are.equal('v0.2.0', require_vendored(project, 'dep'))
-    assert.are.equal(
-      dep.url .. '@v0.2.0',
-      read_json(project .. '/nvim-bundle.json').dependencies.dep
-    )
+    assert.equal(proc.stdout, 'updated dep v0.1.0 -> v0.2.0\n')
+    assert.equal(require_vendored(project, 'dep'), 'v0.2.0')
+    assert.equal(read_json(project .. '/nvim-bundle.json').dependencies.dep, dep.url .. '@v0.2.0')
   end)
 
   it('moves a branch to its new head and leaves a rev alone', function()
@@ -526,14 +518,11 @@ describe('update', function()
     pinned.commit { ['lua/pinned/init.lua'] = 'return "later"\n' }
 
     local proc = cli { '-C', project, 'update' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal(
-      ('updated tracked %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)),
-      proc.stdout
-    )
-    assert.are.equal('new', require_vendored(project, 'tracked'))
-    assert.are.equal('pinned', require_vendored(project, 'pinned'))
+    assert.equal(proc.stdout, ('updated tracked %s -> %s\n'):format(old:sub(1, 7), new:sub(1, 7)))
+    assert.equal(require_vendored(project, 'tracked'), 'new')
+    assert.equal(require_vendored(project, 'pinned'), 'pinned')
   end)
 end)
 
@@ -557,16 +546,16 @@ describe('outdated', function()
     local manifest = slurp(project .. '/nvim-bundle.json')
 
     local proc = cli { '-C', project, 'outdated' }
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
 
-    assert.are.equal(
+    assert.equal(
+      proc.stdout,
       ('pinned is pinned to %s\ntagged v0.1.0 -> v0.2.0\ntracked %s -> %s\n'):format(
         rev:sub(1, 7),
         old:sub(1, 7),
         new:sub(1, 7)
-      ),
-      proc.stdout
+      )
     )
-    assert.are.equal(manifest, slurp(project .. '/nvim-bundle.json'))
+    assert.equal(slurp(project .. '/nvim-bundle.json'), manifest)
   end)
 end)

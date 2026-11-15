@@ -27,27 +27,24 @@ All tasks use `mise`:
   schemas; skipped while the output is newer than its sources
 - `mise run lint` - `generate`, then type-check with `emmylua_check` (warnings
   are errors)
-- `mise run test` - run busted against Neovim 0.12.6
-- `mise run test:version <version>` - run busted against one Neovim version,
-  which mise installs first (`nightly` is refreshed when its tag moves)
-- `mise run test:all` - run busted against 0.10.4, 0.11.7, 0.12.6, and nightly
-- `mise run test:fast` - run busted against the default Neovim, skipping
-  `test:prepare`
-- `mise run test:coverage` - test with luacov (covers `lua/nvim-bundle` only)
+- `mise run test` - run the specs against Neovim 0.12.6
+- `mise run test:version [--coverage] <version>` - run the specs against one
+  Neovim version, which mise installs first (`nightly` is refreshed when its
+  tag moves)
+- `mise run test:all` - run the specs against 0.10.4, 0.11.7, 0.12.6, and
+  nightly
+- `mise run test:coverage` - run the 0.12.6 specs with line coverage of
+  `lua/`, vendored files excluded
 - `mise run ci` - `fmt:check` then `lint` then `test:all`
 - `mise run release` - publish the current `v*` tag to GitHub (maintainers only)
 
-Initialize the type-stub submodule after cloning:
+The specs run on test.nvim's own runner, so the suite needs no Lua, luarocks,
+or busted install. Run one spec file, or narrow by case name, by invoking the
+vendored file directly:
 
 ```sh
-git submodule update --init --recursive
-```
-
-Run one spec file directly after `mise run test:prepare`:
-
-```sh
-eval "$(luarocks path)"
-busted spec/define_spec.lua
+nvim --clean -l lua/nvim-bundle/vendor/test.lua spec/define_spec.lua
+nvim --clean -l lua/nvim-bundle/vendor/test.lua --filter 'dev dependencies'
 ```
 
 ## Architecture
@@ -109,10 +106,16 @@ busted spec/define_spec.lua
   makes a local repository with a `file://` URL, and the `owner/repo`
   shorthand is tested through git's own `url.<base>.insteadOf` setting.
 - **`spec/helpers.lua`** - what every spec file shares: fixtures, the CLI
-  runner, and local remotes. Busted gives `assert` its matchers only inside
-  spec files, so the helpers require `luassert` themselves. Each spec file
-  registers `after_each(h.remove_created)` to delete its temporary paths.
-- **`library/busted`** - git submodule with busted type stubs (stylua-ignored).
+  runner, and local remotes. Each spec file registers
+  `after_each(h.remove_created)` to delete its temporary paths. Under
+  `--coverage`, `cli` records the lines each CLI child runs and merges them
+  into test.nvim's hit table, because test.nvim only reaches the children it
+  starts itself.
+- **`lua/nvim-bundle/vendor/test.lua`** - test.nvim (spec API, assertions,
+  runner, and coverage), vendored as a dev dependency, so no build of
+  nvim-bundle includes it. Specs import the spec API from it, i.e.,
+  `describe`, `it`, and `assert` are locals, not busted globals. Its
+  `assert.equal` and `assert.deep_equal` take `(got, want)`.
 
 ## Documentation
 
@@ -185,7 +188,7 @@ explanation instead.
 
 ## Test environment
 
-The host (busted runner) is an isolated headless Neovim invoked as
+The host (test.nvim runner) is an isolated headless Neovim invoked as
 `nvim --clean -l`. Specs invoke the CLI in a child Neovim, so they exercise the
 same `main` boundary a user does. The generated bundle is then executed
 in-process, where `vim.*` and `vim.treesitter` are available.

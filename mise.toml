@@ -9,7 +9,6 @@ emmylua_check = "github:EmmyLuaLs/emmylua-analyzer-rust"
 emmylua_ls = "github:EmmyLuaLs/emmylua-analyzer-rust"
 
 [tools]
-"asdf:mise-plugins/mise-lua" = { version = "5.1.5", install_env = { ASDF_LUA_LUAROCKS_VERSION = "3.12.2" } }
 "aqua:neovim/neovim" = "0.12.6"
 stylua = "2.6.0"
 gh = "2.103.3"
@@ -29,15 +28,22 @@ platforms.macos-arm64 = { asset_pattern = "emmylua_ls-darwin-arm64.tar.gz" }
 platforms.macos-x64 = { asset_pattern = "emmylua_ls-darwin-x64.tar.gz" }
 
 ################################################################################
+# Env
+################################################################################
+
+[env]
+# .emmyrc.json loads Neovim's runtime as a type library through $VIMRUNTIME. An
+# editor sets it for its language server, but a shell running `emmylua_check`
+# does not.
+VIMRUNTIME = { value = "{{ exec(command='nvim --clean --headless +\"lua io.stdout:write(vim.env.VIMRUNTIME)\" +qa') }}", tools = true }
+
+################################################################################
 # Tasks
 ################################################################################
 
 [tasks]
 fmt = "stylua ."
 "fmt:check" = "stylua --check ."
-
-[tasks."test:prepare"]
-run = 'eval "$(luarocks path)" && luarocks test --prepare'
 
 # The schemas are the source of truth for the DTO types, so the generated file
 # is a build artifact and git-ignored. mise skips the task while the output is
@@ -51,14 +57,13 @@ run = "nvim --clean -l lua/nvim-bundle/vendor/guard.lua --module nvim-bundle.ven
 
 [tasks.lint]
 depends = ["generate"]
-run = '''
-export VIMRUNTIME="$(nvim --clean --headless +'lua io.write(vim.env.VIMRUNTIME)' +q)"
-emmylua_check --warnings-as-errors .
-'''
+run = "emmylua_check --warnings-as-errors ."
 
 [tasks."test:version"]
-depends = ["test:prepare"]
-usage = 'arg "<version>"'
+usage = '''
+arg "<version>"
+flag "--coverage"
+'''
 run = '''
 tool="aqua:neovim/neovim@$usage_version"
 [ "$usage_version" = nightly ] && tool='vfox:jdx/vfox-neovim@nightly'
@@ -68,15 +73,13 @@ tool="aqua:neovim/neovim@$usage_version"
 mise install "$tool"
 # The nightly tag moves, so refresh it when its checksum changed.
 [ "$usage_version" = nightly ] && { mise upgrade "$tool" >/dev/null 2>&1 || true; }
-eval "$(luarocks path)"
-mise exec "$tool" -- busted --verbose
+mise exec "$tool" -- nvim --clean -l lua/nvim-bundle/vendor/test.lua ${usage_coverage:+--coverage}
 '''
 
-[tasks."test"]
-run = 'mise run test:version 0.12.6'
+[tasks.test]
+run = "mise run test:version 0.12.6"
 
 [tasks."test:all"]
-depends = ["test:prepare"]
 run = '''
 for v in 0.10.4 0.11.7 0.12.6 nightly; do
   mise run test:version "$v"
@@ -84,23 +87,9 @@ done
 '''
 
 [tasks."test:coverage"]
-depends = ["test:prepare"]
-run = '''
-rm -f ./luacov.*.*
-eval "$(luarocks path)"
-busted --coverage --verbose
-luacov
-awk '/^Summary$/{flag=1;next} flag{print}' luacov.report.out
-'''
+run = "mise run test:version --coverage 0.12.6"
 
-[tasks."test:fast"]
-description = "Run busted against the default Neovim without preparing dependencies"
-run = '''
-eval "$(luarocks path)"
-busted --verbose
-'''
-
-[tasks."ci"]
+[tasks.ci]
 run = '''
 mise run fmt:check
 mise run lint
@@ -119,7 +108,6 @@ tag="$(git describe --tags --exact-match --match 'v*' HEAD 2>/dev/null)" || {
   exit 1
 }
 
-git submodule update --init --recursive
 test -z "$(git status --porcelain)" || {
   echo "release: working tree is not clean" >&2
   exit 1

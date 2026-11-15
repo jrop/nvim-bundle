@@ -53,7 +53,7 @@ cd nvim-bundle
 nvim --clean -l lua/nvim-bundle.lua --help
 ```
 
-For development, initialize the type-stub submodule as described in
+For development, install the pinned tools as described in
 [Develop nvim-bundle](#develop-nvim-bundle).
 
 To bundle another project from a checkout, point Neovim at the script:
@@ -304,11 +304,10 @@ other dependency bump. To drop a dependency, run `nvim-bundle remove args`.
 
 ## Develop nvim-bundle
 
-Install the pinned tools and initialize the type-stub submodule:
+Install the pinned tools:
 
 ```sh
 mise install
-git submodule update --init --recursive
 ```
 
 Run the checks:
@@ -319,19 +318,18 @@ Run the checks:
 | `mise run fmt:check`     | Check formatting without changing files.                   |
 | `mise run generate`      | Generate `dto.types.lua` when `dto.lua` is newer.          |
 | `mise run lint`          | Generate types, then type-check; warnings are errors.      |
-| `mise run test`          | Run the busted suite against Neovim 0.12.6.                |
-| `mise run test:version`  | Run the suite against one Neovim version, e.g. `0.10.4`.   |
-| `mise run test:all`      | Run the suite against 0.10.4, 0.11.7, 0.12.6, and nightly. |
-| `mise run test:fast`     | Run the suite without preparing test dependencies.         |
-| `mise run test:coverage` | Run the suite with luacov.                                 |
+| `mise run test`          | Run the specs against Neovim 0.12.6.                       |
+| `mise run test:version`  | Run the specs against one Neovim version, e.g. `0.10.4`.   |
+| `mise run test:all`      | Run the specs against 0.10.4, 0.11.7, 0.12.6, and nightly. |
+| `mise run test:coverage` | Run the specs with line coverage of `lua/`.                |
 | `mise run ci`            | Run `fmt:check`, `lint`, and `test:all`.                   |
 
-Run a single spec file after preparing the test dependencies:
+Run a single spec file, or only the cases whose name contains some text, with
+the vendored test runner:
 
 ```sh
-mise run test:prepare
-eval "$(luarocks path)"
-busted spec/define_spec.lua
+nvim --clean -l lua/nvim-bundle/vendor/test.lua spec/define_spec.lua
+nvim --clean -l lua/nvim-bundle/vendor/test.lua --filter 'dev dependencies'
 ```
 
 ## Publish a release

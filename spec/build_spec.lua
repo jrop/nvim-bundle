@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local slurp = h.slurp
@@ -18,9 +19,9 @@ describe('output', function()
     local root = fixture { ['entry.lua'] = 'return { answer = 42 }\n' }
     local chunk, result = compile_bundle(root, 'entry')
 
-    assert.are.equal('entry', result.returns)
-    assert.are.equal(42, chunk().answer)
-    assert.is_truthy(slurp(result.out):find('\n-- returns: entry\n', 1, true))
+    assert.equal(result.returns, 'entry')
+    assert.equal(chunk().answer, 42)
+    assert.contains(slurp(result.out), '\n-- returns: entry\n')
   end)
 
   it('returns a registry with a loader for each module when none is named', function()
@@ -28,18 +29,18 @@ describe('output', function()
     local chunk, result = compile_bundle(root)
     local registry = chunk()
 
-    assert.are.equal('registry', result.returns)
-    assert.is_function(registry['entry'])
-    assert.are.equal(42, registry['entry']().answer)
-    assert.is_truthy(slurp(result.out):find('\n-- returns: registry\n', 1, true))
+    assert.equal(result.returns, 'registry')
+    assert.equal(type(registry['entry']), 'function')
+    assert.equal(registry['entry']().answer, 42)
+    assert.contains(slurp(result.out), '\n-- returns: registry\n')
   end)
 
   it('names a registry after the one package under the root', function()
     local project = fixture { ['lua/pkg/init.lua'] = 'return 1\n' }
     local result = run_ok { '-C', project, 'build' }
 
-    assert.are.equal('dist/pkg.lua', result.out)
-    assert.are.equal('registry', result.returns)
+    assert.equal(result.out, 'dist/pkg.lua')
+    assert.equal(result.returns, 'registry')
   end)
 
   it('asks for --out when a registry has no single package name', function()
@@ -50,13 +51,13 @@ describe('output', function()
   it('resolves an entry given as a dotted module path', function()
     local root = fixture { ['pkg/mod.lua'] = "return 'pkg-mod'\n" }
     local chunk = compile_bundle(root, 'pkg.mod')
-    assert.are.equal('pkg-mod', chunk())
+    assert.equal(chunk(), 'pkg-mod')
   end)
 
   it('resolves an entry directory via init.lua', function()
     local root = fixture { ['pkg/init.lua'] = "return 'pkg-init'\n" }
     local chunk = compile_bundle(root, 'pkg')
-    assert.are.equal('pkg-init', chunk())
+    assert.equal(chunk(), 'pkg-init')
   end)
 
   it('strips a UTF-8 BOM and a shebang from module sources', function()
@@ -64,7 +65,7 @@ describe('output', function()
       ['entry.lua'] = '\239\187\191#!/usr/bin/env -S nvim --clean -l\nreturn 7\n',
     }
     local chunk = compile_bundle(root, 'entry')
-    assert.are.equal(7, chunk())
+    assert.equal(chunk(), 7)
   end)
 
   it('bundles required modules instead of using the host searcher', function()
@@ -73,7 +74,7 @@ describe('output', function()
       ['dep.lua'] = "return { from = 'fixture' }\n",
     }
     local entry = compile_bundle(root, 'entry')()
-    assert.are.equal('fixture', entry.from)
+    assert.equal(entry.from, 'fixture')
   end)
 
   it('falls back to the host require for unknown modules', function()
@@ -83,8 +84,8 @@ describe('output', function()
       return compile_bundle(root, 'entry')()
     end)
     package.loaded['bundle_host_probe'] = nil
-    assert.is_true(ok, tostring(value))
-    assert.are.equal('from-host', value)
+    assert.equal(ok, true, tostring(value))
+    assert.equal(value, 'from-host')
   end)
 
   it('keeps a flat module and a same-named init module distinct', function()
@@ -94,8 +95,8 @@ describe('output', function()
       ['shadow/init.lua'] = "return 'init'\n",
     }
     local entry = compile_bundle(root, 'entry')()
-    assert.are.equal('flat', entry.flat)
-    assert.are.equal('init', entry.init)
+    assert.equal(entry.flat, 'flat')
+    assert.equal(entry.init, 'init')
   end)
 
   it('reports a require cycle instead of recursing forever', function()
@@ -105,11 +106,8 @@ describe('output', function()
     }
     local chunk = compile_bundle(root, 'entry')
     local ok, err = pcall(function() return chunk() end)
-    assert.is_false(ok)
-    assert.is_truthy(
-      tostring(err):find("loop or previous error loading module 'loop'", 1, true),
-      tostring(err)
-    )
+    assert.equal(ok, false)
+    assert.contains(tostring(err), "loop or previous error loading module 'loop'")
   end)
 end)
 
@@ -119,8 +117,8 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local first, second = slurp(result.out):match '^([^\n]*)\n([^\n]*)\n'
 
-    assert.are.equal('#!/usr/bin/env -S nvim --clean -l', first)
-    assert.are.equal('-- vim: set ft=lua:', second)
+    assert.equal(first, '#!/usr/bin/env -S nvim --clean -l')
+    assert.equal(second, '-- vim: set ft=lua:')
   end)
 
   it('runs the entry module when executed as the main script', function()
@@ -133,8 +131,8 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local proc = vim.system({ 'nvim', '--clean', '-l', result.out }, { text = true }):wait()
 
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('entry-main\n', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, 'entry-main\n')
   end)
 
   it('returns the entry module when loaded as a library', function()
@@ -147,8 +145,8 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local entry = load_bundle(result.out)()
 
-    assert.are.equal('entry', entry.marker)
-    assert.is_function(entry.main)
+    assert.equal(entry.marker, 'entry')
+    assert.equal(type(entry.main), 'function')
   end)
 
   it('runs only the entry main guard, and gives libraries an empty arg', function()
@@ -169,8 +167,8 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local proc = vim.system({ 'nvim', '--clean', '-l', result.out, 'x' }, { text = true }):wait()
 
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('entry-main x\nlib-arg {}\n', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, 'entry-main x\nlib-arg {}\n')
   end)
 
   it('keeps a nested bundle from running its main guard', function()
@@ -194,8 +192,8 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local proc = vim.system({ 'nvim', '--clean', '-l', result.out }, { text = true }):wait()
 
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('entry-main\n', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, 'entry-main\n')
   end)
 
   it('runs no main guard when a registry is executed', function()
@@ -215,8 +213,8 @@ describe('bin bundles', function()
     f:close()
     local proc = vim.system({ 'nvim', '--clean', '-l', runner }, { text = true }):wait()
 
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.are.equal('', proc.stdout)
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.equal(proc.stdout, '')
   end)
 
   it('makes the output executable', function()
@@ -224,7 +222,7 @@ describe('bin bundles', function()
     local _, result = compile_bundle(root, 'entry', { bin = true })
     local stat = assert(vim.uv.fs_stat(result.out))
 
-    assert.is_truthy(bit.band(stat.mode, 64) ~= 0)
+    assert.ok(bit.band(stat.mode, 64) ~= 0)
   end)
 
   it('bundles nvim-bundle itself into a working executable', function()
@@ -232,11 +230,11 @@ describe('bin bundles', function()
     run_ok { 'build', '--root', 'lua', '--out', out, '--bin', 'nvim-bundle' }
 
     local proc = vim.system({ 'nvim', '--clean', '-l', out, '--version' }, { text = true }):wait()
-    assert.are.equal(0, proc.code, proc.stderr)
-    assert.is_truthy((proc.stdout or ''):match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+')
+    assert.equal(proc.code, 0, proc.stderr)
+    assert.ok((proc.stdout or ''):match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+')
 
     local entry = load_bundle(out)()
-    assert.is_function(entry.build)
+    assert.equal(type(entry.build), 'function')
   end)
 end)
 
@@ -269,7 +267,7 @@ describe('a file executed again', function()
       root .. '/spec.lua',
     }
     local proc = vim.system(cmd, { text = true }):wait()
-    assert.are.equal(0, proc.code, proc.stderr)
+    assert.equal(proc.code, 0, proc.stderr)
     return proc.stdout or ''
   end
 
@@ -291,7 +289,7 @@ describe('a file executed again', function()
       ['test/state.lua'] = 'io.stdout:write("state loaded\\n")\nreturn { cases = {} }\n',
     }
 
-    assert.are.equal('state loaded\ncases 1, entry-local 0\n', stdout)
+    assert.equal(stdout, 'state loaded\ncases 1, entry-local 0\n')
   end)
 
   -- The spec's `require` cannot return the script run's entry, which is still
@@ -303,7 +301,7 @@ describe('a file executed again', function()
       ['test/state.lua'] = 'return { cases = {} }\n',
     }
 
-    assert.is_truthy(stdout:find('entry-local 0', 1, true), stdout)
+    assert.contains(stdout, 'entry-local 0')
   end)
 
   it('keeps a nested bundle cache apart from the outer one', function()
@@ -320,7 +318,7 @@ describe('a file executed again', function()
       ['vendor/lib.lua'] = slurp(built.out),
     }
 
-    assert.are.same({ 'outer', 'inner' }, compile_bundle(root, 'entry')())
+    assert.deep_equal(compile_bundle(root, 'entry')(), { 'outer', 'inner' })
   end)
 end)
 
@@ -332,8 +330,8 @@ describe('registry', function()
     }
     local registry = compile_bundle(root)()
 
-    assert.are.equal(registry['entry']().dep, registry['dep']())
-    assert.are.equal('dep', registry['dep']().name)
+    assert.equal(registry['dep'](), registry['entry']().dep)
+    assert.equal(registry['dep']().name, 'dep')
   end)
 
   it('contains every bundled module id', function()
@@ -343,8 +341,8 @@ describe('registry', function()
     }
     local registry = compile_bundle(root)()
 
-    assert.is_function(registry['entry'])
-    assert.is_function(registry['dep'])
+    assert.equal(type(registry['entry']), 'function')
+    assert.equal(type(registry['dep']), 'function')
     assert.is_nil(registry['bundle_entry_host_probe'])
   end)
 
@@ -355,8 +353,8 @@ describe('registry', function()
     }
     local registry = compile_bundle(root)()
 
-    assert.is_true(registry['entry']().side)
-    assert.is_true(registry['side_effect']())
+    assert.equal(registry['entry']().side, true)
+    assert.equal(registry['side_effect'](), true)
   end)
 end)
 
@@ -370,10 +368,10 @@ describe('module function names', function()
     local _, result = compile_bundle(root, 'entry')
     local content = slurp(result.out)
 
-    assert.is_truthy(content:find('__mods._entry = function', 1, true))
-    assert.is_truthy(content:find('__mods._myplugin_util = function', 1, true))
-    assert.is_truthy(content:find('__mods._my_plugin_math = function', 1, true))
-    assert.is_truthy(content:find('__mods._myplugin_util("myplugin.util")', 1, true))
+    assert.contains(content, '__mods._entry = function')
+    assert.contains(content, '__mods._myplugin_util = function')
+    assert.contains(content, '__mods._my_plugin_math = function')
+    assert.contains(content, '__mods._myplugin_util("myplugin.util")')
   end)
 
   it('disambiguates ids that sanitize to the same name', function()
@@ -385,11 +383,11 @@ describe('module function names', function()
     local chunk, result = compile_bundle(root, 'entry')
     local content = slurp(result.out)
 
-    assert.is_truthy(content:find('__mods._a_b = function', 1, true))
-    assert.is_truthy(content:find('__mods._a_b_2 = function', 1, true))
+    assert.contains(content, '__mods._a_b = function')
+    assert.contains(content, '__mods._a_b_2 = function')
     local entry = chunk()
-    assert.are.equal('dotted', entry.dotted)
-    assert.are.equal('underscored', entry.underscored)
+    assert.equal(entry.dotted, 'dotted')
+    assert.equal(entry.underscored, 'underscored')
   end)
 
   it('escapes a name that would start with a digit', function()
@@ -398,7 +396,7 @@ describe('module function names', function()
       ['3d.lua'] = "return '3d'\n",
     }
     local _, result = compile_bundle(root, 'entry')
-    assert.is_truthy(slurp(result.out):find('__mods._3d = function', 1, true))
+    assert.contains(slurp(result.out), '__mods._3d = function')
   end)
 
   it('escapes a Lua keyword used as a module name', function()
@@ -407,7 +405,7 @@ describe('module function names', function()
       ['end.lua'] = "return 'end'\n",
     }
     local _, result = compile_bundle(root, 'entry')
-    assert.is_truthy(slurp(result.out):find('__mods._end = function', 1, true))
+    assert.contains(slurp(result.out), '__mods._end = function')
   end)
 end)
 
@@ -428,7 +426,7 @@ describe('excludes', function()
     run_ok { '-C', project, 'build', '--out', out }
 
     local registry = load_bundle(out)()
-    assert.are.equal('args', registry['myplug.vendor.args']())
+    assert.equal(registry['myplug.vendor.args'](), 'args')
     assert.is_nil(registry['myplug.vendor.test'])
   end)
 
@@ -441,13 +439,13 @@ describe('excludes', function()
     stub_host_module('dep', 'host-dep')
     local ok, value = pcall(function()
       local chunk, result = compile_bundle(root, 'entry', { exclude = { 'dep.lua' } })
-      assert.are.equal(2, result.modules)
+      assert.equal(result.modules, 2)
       return chunk()
     end)
     package.loaded.dep = nil
-    assert.is_true(ok, tostring(value))
-    assert.are.equal('host-dep', value.dep)
-    assert.are.equal('bundled-skip', value.skip)
+    assert.equal(ok, true, tostring(value))
+    assert.equal(value.dep, 'host-dep')
+    assert.equal(value.skip, 'bundled-skip')
   end)
 
   it('rejects an entry that is excluded', function()
@@ -478,8 +476,8 @@ describe('output path', function()
     local root = fixture { ['entry.lua'] = 'return 1\n' }
     local out = root .. '-out/nested/deeper/entry.lua'
     local result = run_ok { 'build', '--root', root, '--out', out, 'entry' }
-    assert.are.equal(out, result.out)
-    assert.is_truthy(vim.uv.fs_stat(out))
+    assert.equal(result.out, out)
+    assert.ok(vim.uv.fs_stat(out))
   end)
 
   it('rejects an output path inside the source root', function()
@@ -522,6 +520,6 @@ describe('determinism', function()
       outputs[i] = slurp(out)
     end
 
-    assert.are.equal(outputs[1], outputs[2])
+    assert.equal(outputs[2], outputs[1])
   end)
 end)

@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local cli = h.cli
@@ -77,9 +78,9 @@ describe('project files', function()
       'dep',
     }
     local stderr = proc.stderr or ''
-    assert.are.equal(1, proc.code)
-    assert.is_truthy(stderr:find('`.dependencies["dep"].exclude`: Expected array', 1, true))
-    assert.is_falsy(stderr:find('alt', 1, true), stderr)
+    assert.equal(proc.code, 1)
+    assert.contains(stderr, '`.dependencies["dep"].exclude`: Expected array')
+    assert.is_nil((stderr:find('alt', 1, true)), stderr)
   end)
 
   it(
@@ -134,7 +135,7 @@ describe('project files', function()
   it('rejects an unknown build option from the Lua API', function()
     local root = fixture { ['entry.lua'] = 'return 1\n' }
     local ok, err = pcall(load_module().build, { root = root, entry = 'entry', exlude = {} })
-    assert.is_false(ok)
-    assert.is_truthy(tostring(err):find('`.exlude`: Unexpected key', 1, true), tostring(err))
+    assert.equal(ok, false)
+    assert.contains(tostring(err), '`.exlude`: Unexpected key')
   end)
 end)

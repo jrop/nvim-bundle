@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local run_entry = h.run_entry
 
@@ -10,8 +11,8 @@ describe('dead code', function()
   it('removes a statement whose condition is false', function()
     local value, module =
       run_entry 'if false then error("dead") end\nwhile false do error("dead") end\nreturn 1\n'
-    assert.are.equal(1, value)
-    assert.are.equal('do end\ndo end\nreturn 1\n', module)
+    assert.equal(value, 1)
+    assert.equal(module, 'do end\ndo end\nreturn 1\n')
   end)
 
   it('keeps a true branch as a block', function()
@@ -23,23 +24,23 @@ describe('dead code', function()
       'return "late"',
       '',
     }, '\n'))
-    assert.are.same({ inside = 1 }, value)
-    assert.is_falsy(module:find('r.other', 1, true))
-    assert.is_truthy(module:find('do   return r end', 1, true), module)
+    assert.deep_equal(value, { inside = 1 })
+    assert.is_nil((module:find('r.other', 1, true)))
+    assert.contains(module, 'do   return r end')
   end)
 
   it('makes the first kept elseif the if', function()
     local value, module =
       run_entry 'if false then return 1 elseif vim.g.flag then return 2 else return 3 end\n'
-    assert.are.equal(3, value)
-    assert.are.equal('    if vim.g.flag then return 2 else return 3 end\n', module)
+    assert.equal(value, 3)
+    assert.equal(module, '    if vim.g.flag then return 2 else return 3 end\n')
   end)
 
   it('makes a true elseif the else and drops the arms after it', function()
     local value, module =
       run_entry 'if vim.g.flag then return 1 elseif true then return 2 elseif vim.g.other then return 3 else return 4 end\n'
-    assert.are.equal(2, value)
-    assert.are.equal('if vim.g.flag then return 1 else   return 2   end\n', module)
+    assert.equal(value, 2)
+    assert.equal(module, 'if vim.g.flag then return 1 else   return 2   end\n')
   end)
 
   it('evaluates literals, not, ==, ~=, and a short-circuit that skips its right side', function()
@@ -55,7 +56,7 @@ describe('dead code', function()
       'return r',
       '',
     }, '\n'))
-    assert.are.same({ eq = true, not_nil = true, zero = true, or_ = true }, value)
+    assert.deep_equal(value, { eq = true, not_nil = true, zero = true, or_ = true })
   end)
 
   it('keeps a condition that depends on the program', function()
@@ -69,7 +70,7 @@ describe('dead code', function()
       '',
     }, '\n')
     local _, module = run_entry(src)
-    assert.are.equal(src, module)
+    assert.equal(module, src)
   end)
 
   it('removes a branch chosen by a define', function()
@@ -77,8 +78,8 @@ describe('dead code', function()
       'if vim.g.env == "production" then return "prod" else return "dev" end\n',
       { ['vim.g.env'] = '"production"' }
     )
-    assert.are.equal('prod', value)
-    assert.is_falsy(module:find('"dev"', 1, true))
+    assert.equal(value, 'prod')
+    assert.is_nil((module:find('"dev"', 1, true)))
   end)
 
   it('skips everything inside a removed branch', function()
@@ -90,18 +91,18 @@ describe('dead code', function()
       'return "ok"',
       '',
     }, '\n'))
-    assert.are.equal('ok', value)
+    assert.equal(value, 'ok')
   end)
 
   it('keeps a removed statement from joining its neighbors', function()
     -- Without the `do end`, `("x"):upper()` would continue `tostring` on
     -- the line before as a call.
     local value = run_entry 'local s = tostring\nif false then end\nreturn ("x"):upper()\n'
-    assert.are.equal('X', value)
+    assert.equal(value, 'X')
   end)
 
   it('keeps the lines after a removed branch in place', function()
     local _, _, line = run_entry 'if false then\n  local a = 1\n  local b = 2\nend\nerror("here")\n'
-    assert.are.equal(5, line)
+    assert.equal(line, 5)
   end)
 end)

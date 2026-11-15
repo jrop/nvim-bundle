@@ -11,5 +11,12 @@
       "repo": "jrop/guard.nvim"
     }
   },
+  "dev_dependencies": {
+    "test": {
+      "entry": "test",
+      "ref": "v0.3.0",
+      "repo": "jrop/test.nvim"
+    }
+  },
   "name": "nvim-bundle"
 }

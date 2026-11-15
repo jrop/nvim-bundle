@@ -500,11 +500,12 @@ final newline is added.
 - `lua/nvim-bundle/version.lua` — the version a checkout reports.
 - `lua/nvim-bundle/vendor/args.lua` — vendored args.nvim argument parser.
 - `lua/nvim-bundle/vendor/guard.lua` — vendored guard schema library.
+- `lua/nvim-bundle/vendor/test.lua` — vendored test.nvim runner, a dev
+  dependency.
 - `TODO.md` — known gaps that are out of scope for now.
 - `docs/how-to.md` — task-oriented guides.
 - `docs/reference.md` — this reference.
 - `docs/explanation.md` — design rationale and limitations.
 - `spec/*_spec.lua` — black-box tests using temporary fixture trees, one file per area.
 - `spec/helpers.lua` — the fixture, CLI, and git helpers the spec files share.
-- `library/busted/` — git submodule with type stubs for busted.
 - `dist/` — generated bundles; git-ignored.

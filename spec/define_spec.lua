@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local run_fail = h.run_fail
@@ -16,7 +17,7 @@ describe('defines', function()
       __DEV__ = 'false',
       ['vim.g.env'] = '"production"',
     })
-    assert.are.same({ dev = false, env = 'production' }, value)
+    assert.deep_equal(value, { dev = false, env = 'production' })
   end)
 
   it('leaves strings, comments, table keys, and field names alone', function()
@@ -30,10 +31,10 @@ describe('defines', function()
       }, '\n'),
       { __DEV__ = 'false' }
     )
-    assert.is_truthy(text:find('-- __DEV__ in a comment', 1, true))
-    assert.is_truthy(text:find('{ __DEV__ = 1 }', 1, true))
-    assert.is_truthy(text:find('"__DEV__"', 1, true))
-    assert.is_truthy(text:find('t.__DEV__', 1, true))
+    assert.contains(text, '-- __DEV__ in a comment')
+    assert.contains(text, '{ __DEV__ = 1 }')
+    assert.contains(text, '"__DEV__"')
+    assert.contains(text, 't.__DEV__')
   end)
 
   it('leaves a name that the module declares itself', function()
@@ -44,7 +45,7 @@ describe('defines', function()
       'for _, __DEV__ in ipairs { "local" } do return __DEV__ end\n',
     }
     for _, src in ipairs(cases) do
-      assert.are.equal('local', (run_entry(src, { __DEV__ = 'false' })))
+      assert.equal((run_entry(src, { __DEV__ = 'false' })), 'local')
     end
   end)
 
@@ -54,8 +55,8 @@ describe('defines', function()
       ['vim.g.cfg'] = '{ level = 2 }',
       ['vim.g.make'] = 'function() return 3 end',
     })
-    assert.are.same({ 'PRODUCTION', 2, 3 }, value)
-    assert.is_truthy(text:find('("production"):upper()', 1, true))
+    assert.deep_equal(value, { 'PRODUCTION', 2, 3 })
+    assert.contains(text, '("production"):upper()')
   end)
 
   it('replaces the longest key that matches', function()
@@ -63,14 +64,14 @@ describe('defines', function()
       ['vim.g'] = '{ other = "from vim.g" }',
       ['vim.g.env'] = '"production"',
     })
-    assert.are.same({ 'production', 'from vim.g' }, value)
+    assert.deep_equal(value, { 'production', 'from vim.g' })
   end)
 
   it('replaces a key that spans lines and keeps the lines after it in place', function()
     local err, _, line =
       run_entry('local env = vim.g\n  .env\nerror(env)\n', { ['vim.g.env'] = '"prod"' })
-    assert.is_truthy(tostring(err):find('prod', 1, true), tostring(err))
-    assert.are.equal(3, line)
+    assert.contains(tostring(err), 'prod')
+    assert.equal(line, 3)
   end)
 
   it('ends the previous statement before a value that starts a statement', function()
@@ -80,7 +81,7 @@ describe('defines', function()
       'local seen\nlocal s = tostring\n-- a comment between\nvim.g.log:gsub(".", function(c) seen = c end)\nreturn { s ~= nil, seen }\n',
       { ['vim.g.log'] = '"x"' }
     )
-    assert.are.same({ true, 'x' }, value)
+    assert.deep_equal(value, { true, 'x' })
   end)
 
   it('adds no `;` before the first statement of a block', function()
@@ -88,8 +89,8 @@ describe('defines', function()
       'local seen\ndo vim.g.log:gsub(".", function(c) seen = c end) end\nreturn seen\n',
       { ['vim.g.log'] = '"x"' }
     )
-    assert.are.equal('x', value)
-    assert.is_truthy(text:find('do ("x"):gsub', 1, true))
+    assert.equal(value, 'x')
+    assert.contains(text, 'do ("x"):gsub')
   end)
 
   it('links a require that a define value contains', function()
@@ -98,12 +99,12 @@ describe('defines', function()
       { DEP = 'require("dep")' },
       { ['dep.lua'] = 'return "bundled"\n' }
     )
-    assert.are.equal('bundled', value)
+    assert.equal(value, 'bundled')
   end)
 
   it(
     'ignores a key that matches nothing',
-    function() assert.are.equal(1, (run_entry('return 1\n', { __UNUSED__ = 'true' }))) end
+    function() assert.equal((run_entry('return 1\n', { __UNUSED__ = 'true' })), 1) end
   )
 
   it('rejects an assignment to a defined key or a field through it', function()
@@ -165,6 +166,6 @@ describe('defines', function()
     local root = fixture { ['entry.lua'] = 'return __DEV__\n' }
     local out = root .. '-out/entry.lua'
     load_module().build { root = root, out = out, entry = 'entry', define = { __DEV__ = '42' } }
-    assert.are.equal(42, load_bundle(out)())
+    assert.equal(load_bundle(out)(), 42)
   end)
 end)

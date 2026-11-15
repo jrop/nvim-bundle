@@ -15,8 +15,7 @@
       "dist"
     ],
     "library": [
-      "$VIMRUNTIME",
-      "library/busted"
+      "$VIMRUNTIME"
     ]
   }
 }

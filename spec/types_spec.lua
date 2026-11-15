@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, pending, after_each = Test.describe, Test.it, Test.pending, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local slurp = h.slurp
@@ -23,13 +24,15 @@ describe('types', function()
     return (proc.stdout or '') .. '\n' .. (proc.stderr or '')
   end
 
-  --- @return boolean
-  local function can_check_types()
+  -- test.nvim marks a case pending when it is declared, not while it runs, so
+  -- whether the checker is installed is decided as the file is collected.
+  --- @param name string
+  --- @param fn fun()
+  local function it_checks(name, fn)
     if vim.fn.executable 'emmylua_check' == 0 then
-      pending 'emmylua_check is not installed'
-      return false
+      return pending(name .. ' (emmylua_check is not installed)')
     end
-    return true
+    it(name, fn)
   end
 
   local consumer = table.concat({
@@ -42,9 +45,7 @@ describe('types', function()
 
   local util = '---@class Util\n---@field answer integer\nreturn { answer = 42 }\n'
 
-  it('preserves the type of a required module in the entry', function()
-    if not can_check_types() then return end
-
+  it_checks('preserves the type of a required module in the entry', function()
     local root = fixture {
       ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
       ['util.lua'] = util,
@@ -52,13 +53,11 @@ describe('types', function()
     local _, result = compile_bundle(root, 'entry')
     local output = check_types(slurp(result.out), consumer)
 
-    assert.is_truthy(output:find('consumer.lua', 1, true), output)
-    assert.is_truthy(output:find('assign-type-mismatch', 1, true), output)
+    assert.contains(output, 'consumer.lua')
+    assert.contains(output, 'assign-type-mismatch')
   end)
 
-  it('types a required bundle as its entry, never nil', function()
-    if not can_check_types() then return end
-
+  it_checks('types a required bundle as its entry, never nil', function()
     local root = fixture {
       ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
       ['util.lua'] = util,
@@ -69,33 +68,17 @@ describe('types', function()
       "local lib = require 'bundled_lib'\nprint(lib.util.answer + 1)\n"
     )
 
-    assert.is_nil(output:find('need-check-nil', 1, true), output)
+    assert.is_nil((output:find('need-check-nil', 1, true)), output)
   end)
 
-  it('preserves types through pcall(require, ...)', function()
-    -- emmylua_check 0.25.1 infers a module's type through pcall in only
-    -- about half its runs, with any cache shape and on one thread, so a
-    -- result here would say nothing about the bundle.
-    pending 'emmylua_check is nondeterministic through pcall'
-    if not can_check_types() then return end
+  -- emmylua_check 0.25.1 infers a module's type through pcall in only about
+  -- half its runs, with any cache shape and on one thread, so a result here
+  -- would say nothing about the bundle. Once it is deterministic, this case
+  -- should bundle `pcall(require, 'util')` and expect the consumer's
+  -- `assign-type-mismatch`, as the cases around it do.
+  pending 'preserves types through pcall(require, ...)'
 
-    local root = fixture {
-      ['entry.lua'] = "local ok, util = pcall(require, 'util')\nreturn { ok = ok, util = util }\n",
-      ['util.lua'] = util,
-    }
-    local _, result = compile_bundle(root, 'entry')
-    local output = check_types(slurp(result.out), consumer)
-
-    assert.is_truthy(output:find('consumer.lua', 1, true), output)
-    assert.is_truthy(
-      output:find('assign-type-mismatch', 1, true) or output:find('need-check-nil', 1, true),
-      output
-    )
-  end)
-
-  it('preserves the type of a module through the registry', function()
-    if not can_check_types() then return end
-
+  it_checks('preserves the type of a module through the registry', function()
     local root = fixture {
       ['entry.lua'] = "local util = require 'util'\nreturn { util = util }\n",
       ['util.lua'] = util,
@@ -112,7 +95,7 @@ describe('types', function()
       }, '\n')
     )
 
-    assert.is_truthy(output:find('consumer.lua', 1, true), output)
-    assert.is_truthy(output:find('assign-type-mismatch', 1, true), output)
+    assert.contains(output, 'consumer.lua')
+    assert.contains(output, 'assign-type-mismatch')
   end)
 end)

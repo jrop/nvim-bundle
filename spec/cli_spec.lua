@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local cli = h.cli
@@ -17,8 +18,8 @@ describe('public API', function()
     local keys = vim.tbl_keys(NvimBundle)
     table.sort(keys)
 
-    assert.are.same({ 'build' }, keys)
-    assert.is_function(NvimBundle.build)
+    assert.deep_equal(keys, { 'build' })
+    assert.equal(type(NvimBundle.build), 'function')
     assert.is_nil(NvimBundle.run)
     assert.is_nil(NvimBundle.main)
   end)
@@ -28,9 +29,9 @@ describe('public API', function()
     local out = root .. '-out/entry.lua'
     local result = load_module().build { root = root, out = out, entry = 'entry' }
 
-    assert.are.equal(out, result.out)
-    assert.are.equal(1, result.modules)
-    assert.is_truthy(vim.uv.fs_stat(out))
+    assert.equal(result.out, out)
+    assert.equal(result.modules, 1)
+    assert.ok(vim.uv.fs_stat(out))
   end)
 end)
 
@@ -53,7 +54,7 @@ describe('arguments', function()
     local out = root .. '-out/entry.lua'
     local result = run_ok { 'build', '--root=' .. root, '--out=' .. out, 'entry' }
 
-    assert.are.equal(out, result.out)
+    assert.equal(result.out, out)
   end)
 
   it(
@@ -69,16 +70,16 @@ describe('arguments', function()
   it('lists the subcommands in the top-level help', function()
     for _, flag in ipairs { '--help', '-h' } do
       local help = run_help { flag }
-      assert.is_truthy(help:find('Usage: nvim-bundle <command>', 1, true), help)
-      assert.is_truthy(help:find('build', 1, true), help)
+      assert.contains(help, 'Usage: nvim-bundle <command>')
+      assert.contains(help, 'build')
     end
   end)
 
   it('returns build help without bundling', function()
     for _, flag in ipairs { '--help', '-h' } do
       local help = run_help { 'build', flag }
-      assert.is_truthy(help:find('Usage: nvim-bundle build [<entry>]', 1, true), help)
-      assert.is_truthy(help:find('--root', 1, true), help)
+      assert.contains(help, 'Usage: nvim-bundle build [<entry>]')
+      assert.contains(help, '--root')
     end
   end)
 
@@ -96,9 +97,9 @@ describe('arguments', function()
   it('prints both versions', function()
     for _, flag in ipairs { '--version', '-V' } do
       local proc = cli { flag }
-      assert.are.equal(0, proc.code, proc.stderr)
+      assert.equal(proc.code, 0, proc.stderr)
       local stdout = proc.stdout or ''
-      assert.is_truthy(stdout:match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+', stdout)
+      assert.ok(stdout:match '^nvim%-bundle %d+%.%d+%.%d+ %(Neovim %d+%.%d+%.%d+', stdout)
     end
   end)
 

@@ -1,6 +1,7 @@
---- @diagnostic disable: undefined-field
-
+local Test = require 'nvim-bundle.vendor.test'
 local h = require 'spec.helpers'
+local describe, it, after_each = Test.describe, Test.it, Test.after_each
+local assert = Test.assert
 
 local fixture = h.fixture
 local compile_bundle = h.compile_bundle
@@ -15,8 +16,8 @@ describe('static requires', function()
       ['dep.lua'] = "return 'dep'\n",
     }
     local entry = compile_bundle(root, 'entry')()
-    assert.is_true(entry.ok)
-    assert.are.equal('dep', entry.dep)
+    assert.equal(entry.ok, true)
+    assert.equal(entry.dep, 'dep')
   end)
 
   it('resolves xpcall(require, handler, ...) to a bundled module', function()
@@ -26,8 +27,8 @@ describe('static requires', function()
       ['dep.lua'] = "return 'dep'\n",
     }
     local entry = compile_bundle(root, 'entry')()
-    assert.is_true(entry.ok)
-    assert.are.equal('dep', entry.dep)
+    assert.equal(entry.ok, true)
+    assert.equal(entry.dep, 'dep')
   end)
 
   it('leaves a shadowed require dynamic', function()
@@ -36,7 +37,7 @@ describe('static requires', function()
         .. "return require 'dep'\n",
       ['dep.lua'] = "return 'bundled'\n",
     }
-    assert.are.equal('local-dep', compile_bundle(root, 'entry')())
+    assert.equal(compile_bundle(root, 'entry')(), 'local-dep')
   end)
 
   it('links a multi-line require and keeps the lines after it in place', function()
@@ -45,8 +46,8 @@ describe('static requires', function()
       nil,
       { ['dep.lua'] = "return 'bundled'\n" }
     )
-    assert.is_truthy(tostring(err):find('bundled', 1, true), tostring(err))
-    assert.are.equal(4, line)
+    assert.contains(tostring(err), 'bundled')
+    assert.equal(line, 4)
   end)
 
   it('resolves escaped and long-string literals', function()
@@ -55,8 +56,8 @@ describe('static requires', function()
       ['pkg/util.lua'] = "return { name = 'util' }\n",
     }
     local value = compile_bundle(root, 'entry')()
-    assert.are.equal('util', value.escaped.name)
-    assert.are.equal(value.escaped, value.long)
+    assert.equal(value.escaped.name, 'util')
+    assert.equal(value.long, value.escaped)
   end)
 
   it('passes the module id as a vararg', function()
@@ -64,7 +65,7 @@ describe('static requires', function()
       ['entry.lua'] = "return require 'dep'\n",
       ['dep.lua'] = 'return ...\n',
     }
-    assert.are.equal('dep', compile_bundle(root, 'entry')())
+    assert.equal(compile_bundle(root, 'entry')(), 'dep')
   end)
 
   it('returns true for a module with no return value, as require does', function()
@@ -72,6 +73,6 @@ describe('static requires', function()
       ['entry.lua'] = "return require 'side_effect'\n",
       ['side_effect.lua'] = 'local value = 1\n',
     }
-    assert.is_true(compile_bundle(root, 'entry')())
+    assert.equal(compile_bundle(root, 'entry')(), true)
   end)
 end)
