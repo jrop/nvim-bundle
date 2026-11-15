@@ -2,14 +2,31 @@
 ## Tools
 ################################################################################
 
+# Both emmylua tools ship in one GitHub release, and mise lists each repository
+# once, so an alias gives each tool its own name and install directory.
+[tool_alias]
+emmylua_check = "github:EmmyLuaLs/emmylua-analyzer-rust"
+emmylua_ls = "github:EmmyLuaLs/emmylua-analyzer-rust"
+
 [tools]
 "asdf:mise-plugins/mise-lua" = { version = "5.1.5", install_env = { ASDF_LUA_LUAROCKS_VERSION = "3.12.2" } }
 "aqua:neovim/neovim" = "0.12.6"
 stylua = "2.6.0"
 gh = "2.103.3"
-cargo-binstall = "1.26.2"
-"cargo:emmylua_ls" = { version = "0.25.1", depends = ["cargo-binstall"] }
-"cargo:emmylua_check" = { version = "0.25.1", depends = ["cargo-binstall"] }
+
+[tools.emmylua_check]
+version = "0.25.1"
+bin = "emmylua_check"
+platforms.linux-x64 = { asset_pattern = "emmylua_check-linux-x64.tar.gz" }
+platforms.macos-arm64 = { asset_pattern = "emmylua_check-darwin-arm64.tar.gz" }
+platforms.macos-x64 = { asset_pattern = "emmylua_check-darwin-x64.tar.gz" }
+
+[tools.emmylua_ls]
+version = "0.25.1"
+bin = "emmylua_ls"
+platforms.linux-x64 = { asset_pattern = "emmylua_ls-linux-x64.tar.gz" }
+platforms.macos-arm64 = { asset_pattern = "emmylua_ls-darwin-arm64.tar.gz" }
+platforms.macos-x64 = { asset_pattern = "emmylua_ls-darwin-x64.tar.gz" }
 
 ################################################################################
 # Tasks
