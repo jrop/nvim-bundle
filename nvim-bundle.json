@@ -2,12 +2,12 @@
   "dependencies": {
     "args": {
       "entry": "args",
-      "ref": "v0.1.0",
+      "ref": "v0.1.1",
       "repo": "jrop/args.nvim"
     },
     "guard": {
       "entry": "guard",
-      "ref": "v0.1.0",
+      "ref": "v0.1.1",
       "repo": "jrop/guard.nvim"
     }
   },

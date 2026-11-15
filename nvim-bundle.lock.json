@@ -2,20 +2,20 @@
   "dependencies": {
     "args": {
       "built_with": "0.1.0",
-      "commit": "d3f79feff8cd7c1934c1bd9307fd0832e4d7ae21",
+      "commit": "523ee68e60529e981c1db2117c0a33ca6428d636",
       "entry": "args",
       "kind": "tag",
-      "ref": "v0.1.0",
-      "sha256": "b661c9d202d94c5ac8a284ead7323c8c52fe41aa090f7fba32b0450e7cc7e4a2",
+      "ref": "v0.1.1",
+      "sha256": "5901ed0316fffec92a311a55087e5cffa3ddbd05ace3daed9c942acc83478653",
       "source": "https://github.com/jrop/args.nvim"
     },
     "guard": {
       "built_with": "0.1.0",
-      "commit": "49cb0e717b4a78d1b20f55bfe6e9ff4310bacd90",
+      "commit": "9486ce8e6f05dd87bb2e95c39cdd4f12d09b3bd8",
       "entry": "guard",
       "kind": "tag",
-      "ref": "v0.1.0",
-      "sha256": "aa197002153635600ae0527480d0cd13fbfea5ba8655ac888f7071022ff56273",
+      "ref": "v0.1.1",
+      "sha256": "68ed5065b424e8ab6681e413b6124feb41cbbd9a9b296b18235850e879c1b307",
       "source": "https://github.com/jrop/guard.nvim"
     },
     "test": {
