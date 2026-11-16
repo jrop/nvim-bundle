@@ -78,6 +78,22 @@ the vendored argument parser that the entry requires. Run the entry with
 outside the source root, because every `.lua` file below the source root is
 bundled.
 
+## Start a new project
+
+Run `init` in an empty directory:
+
+```sh
+mkdir foo.nvim && cd foo.nvim
+nvim-bundle init
+mise run ci
+```
+
+`init` names the project `foo`, runs `git init` when git is installed, writes
+`lua/foo.lua` with a spec, installs test.nvim as a dev dependency, and writes a
+`mise.toml` whose tasks format, type-check, and test the project. To test
+against other Neovim versions, edit `nvim_versions` under `[vars]` in
+`mise.toml`. See [`init`](reference.md#init).
+
 ## Bundle a plugin
 
 From the root of the plugin you want to bundle:

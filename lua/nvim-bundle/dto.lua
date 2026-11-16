@@ -8,38 +8,9 @@ local guard = require 'nvim-bundle.vendor.guard'
 
 local M = {}
 
---- Choose one alternative by the input's Lua type, so a failure reports only
---- the shape the user was writing. A plain `one_of` reports every alternative:
---- an object entry with a bad `exclude` would also be told it is not a string.
---- The schema still says `one_of`, so the generator still emits a union.
---- @param alternatives table<type, Guard>
---- @return Guard
-local function by_type(alternatives)
-  -- Sorted, so the generated union reads the same on every run.
-  local kinds = vim.tbl_keys(alternatives)
-  table.sort(kinds)
-  local guards = vim.tbl_map(function(kind) return alternatives[kind] end, kinds)
-  local expected = 'Expected ' .. table.concat(kinds, ' or ')
-
-  return guard.Guard.new({ type = 'one_of', guards = guards }, function(x)
-    local chosen = alternatives[type(x)]
-    if not chosen then return guard.err(x, guard.problem(expected, x)) end
-    return chosen._parse(x)
-  end)
-end
-
---- Decode a missing value as `make()`. Wrapping with `:optional()` would make
---- the generated field optional, and then every reader would have to handle a
---- nil that validation has already ruled out.
---- @param inner Guard
---- @param make fun(): any
---- @return Guard
-local function default(inner, make)
-  return guard.Guard.new(inner._schema, function(x)
-    if x == nil then return guard.ok(make()) end
-    return inner._parse(x)
-  end)
-end
+--- Each parse gets its own table, so mutating one manifest never changes another.
+--- @return table
+local function empty() return {} end
 
 --- The fields that say how a dependency is built. They appear in the manifest,
 --- in the lock, and in `build` options, so each schema copies them in.
@@ -67,7 +38,9 @@ M.DependencyObject = guard.object(
 )
 
 --- A manifest entry: `repo[@ref]`, or an object when it has build settings.
-M.ManifestDependency = by_type { string = guard.string(), table = M.DependencyObject }
+--- `by_type` keeps an object entry with a bad setting from also being told
+--- that it is not a string.
+M.ManifestDependency = guard.by_type { string = guard.string(), table = M.DependencyObject }
 
 --- Both sections vendor to `vendor/<alias>.lua`, so one alias in both would
 --- name one file twice.
@@ -81,18 +54,13 @@ local function has_disjoint_sections(manifest)
 end
 
 --- Unknown top-level keys pass through, so a rewrite keeps whatever else the
---- user keeps in the file.
+--- user keeps in the file. Each section defaults to empty rather than being
+--- optional, so no reader handles a nil that parsing already ruled out.
 M.Manifest = guard
   .object({
     name = guard.string():optional(),
-    dependencies = default(
-      guard.record(guard.string(), M.ManifestDependency),
-      function() return {} end
-    ),
-    dev_dependencies = default(
-      guard.record(guard.string(), M.ManifestDependency),
-      function() return {} end
-    ),
+    dependencies = guard.record(guard.string(), M.ManifestDependency):default(empty),
+    dev_dependencies = guard.record(guard.string(), M.ManifestDependency):default(empty),
   })
   :invariant(
     has_disjoint_sections,
@@ -117,7 +85,7 @@ M.LockEntry = guard.object(
 --- is rejected rather than misread.
 M.Lock = guard.object {
   lock_version = guard.literal(1),
-  dependencies = default(guard.record(guard.string(), M.LockEntry), function() return {} end),
+  dependencies = guard.record(guard.string(), M.LockEntry):default(empty),
 }
 
 --- The define pass matches only a global name or a dotted path of plain
@@ -168,18 +136,16 @@ M.BuildOptions = guard.object(
 )
 
 --- Validate `value` against `schema`, or fail with every problem guard found.
---- `try_parse` is used because `parse` raises at level 2, which would prefix
---- the user-facing message with a source position.
+--- These values come from the user, so the message names the file, not the
+--- line of nvim-bundle that `parse` would blame.
 --- @param schema Guard
 --- @param value unknown
 --- @param what string names the value in the error, such as a file name
 --- @return any
 function M.check(schema, value, what)
-  local result = schema:try_parse(value)
-  if result.ok then return result.value end
-  -- emmylua does not narrow guard's generic result union on `ok`.
-  --- @cast result guard.ParseError
-  error(('nvim-bundle: %s: %s'):format(what, result:format()), 0)
+  local parsed, err = schema:try_parse(value)
+  if err then error(('nvim-bundle: %s: %s'):format(what, err), 0) end
+  return parsed
 end
 
 return M

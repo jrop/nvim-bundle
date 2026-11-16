@@ -31,6 +31,7 @@ end
 local args = require 'nvim-bundle.vendor.args'
 local build = require 'nvim-bundle.build'
 local deps = require 'nvim-bundle.deps'
+local scaffold = require 'nvim-bundle.scaffold'
 local version = require 'nvim-bundle.version'
 
 local M = { build = build.build }
@@ -39,6 +40,7 @@ local USAGE = [[
 Usage: nvim-bundle <command> [options]
 
 Commands:
+  init [<name>]      Scaffold a project in the current directory
   build [<entry>]    Bundle a source tree into one Lua file
   install [<spec>]   Vendor a dependency, or sync lua/<name>/vendor/
   remove <alias>     Delete a vendored dependency
@@ -91,6 +93,35 @@ end
 
 --- @type table<string, nvim-bundle.Command>
 local COMMANDS = {
+  init = {
+    options = {},
+    usage = [[
+Usage: nvim-bundle init [<name>]
+
+Scaffolds a project named <name> in the current directory, and installs
+jrop/test.nvim as a dev dependency.
+
+Options:
+  -h, --help         Show this help
+]],
+    run = function(parsed)
+      if parsed._[2] then die('unexpected argument ' .. parsed._[2]) end
+      local name, kept = scaffold.init(parsed._[1])
+      -- Only the release task defines the version, so a checkout's fallback
+      -- may name a version that mise cannot install.
+      if vim.g.nvim_bundle_version == nil then
+        io.stderr:write(
+          ('nvim-bundle: warning: pinned unreleased nvim-bundle %s in mise.toml\n'):format(version)
+        )
+      end
+      local lines = { 'initialized ' .. name }
+      for _, path in ipairs(kept) do
+        lines[#lines + 1] = 'kept ' .. path
+      end
+      return table.concat(lines, '\n')
+    end,
+  },
+
   build = {
     options = {
       ['--root'] = 'string',

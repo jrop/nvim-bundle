@@ -1,5 +1,6 @@
 --- Every dependency operation is a git command, so any host that git can reach
---- works the same way, with the user's own credentials and no API token.
+--- works the same way, with the user's own credentials and no API token. `init`
+--- also starts each new project's repository here.
 local M = {}
 
 --- @param msg string
@@ -59,6 +60,16 @@ function M.ref_kind(url, ref)
   if found[tag] then return 'tag' end
   if not found[branch] then die(('%s is neither a tag nor a branch of %s'):format(ref, url)) end
   return 'branch'
+end
+
+--- Make the cwd a git repository, unless git is missing or the cwd already
+--- belongs to a work tree. A project inside another repository (a monorepo, or
+--- a dotfiles checkout) is that repository's to track, so a nested one would
+--- only hide the project from it.
+function M.init_repository()
+  if vim.fn.executable 'git' == 0 then return end
+  if vim.system({ 'git', 'rev-parse', '--is-inside-work-tree' }):wait().code == 0 then return end
+  run({ 'init', '-q' }, 'cannot create a git repository')
 end
 
 --- Check out `ref` of `url` into `dir`, and return the commit that is checked

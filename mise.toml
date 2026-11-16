@@ -9,7 +9,7 @@ emmylua_check = "github:EmmyLuaLs/emmylua-analyzer-rust"
 emmylua_ls = "github:EmmyLuaLs/emmylua-analyzer-rust"
 
 [tools]
-"aqua:neovim/neovim" = "0.12.6"
+"aqua:neovim/neovim" = "{{vars.nvim_default}}"
 stylua = "2.6.0"
 gh = "2.103.3"
 
@@ -26,6 +26,16 @@ bin = "emmylua_ls"
 platforms.linux-x64 = { asset_pattern = "emmylua_ls-linux-x64.tar.gz" }
 platforms.macos-arm64 = { asset_pattern = "emmylua_ls-darwin-arm64.tar.gz" }
 platforms.macos-x64 = { asset_pattern = "emmylua_ls-darwin-x64.tar.gz" }
+
+################################################################################
+# Vars
+################################################################################
+
+# The Neovim versions the specs run against. The default is the one `test` and
+# the tools above use, so moving the grid forward is an edit to these lines.
+[vars]
+nvim_default = "0.12.6"
+nvim_versions = "0.10.4 0.11.7 {{vars.nvim_default}} nightly"
 
 ################################################################################
 # Env
@@ -77,17 +87,17 @@ mise exec "$tool" -- nvim --clean -l lua/nvim-bundle/vendor/test.lua ${usage_cov
 '''
 
 [tasks.test]
-run = "mise run test:version 0.12.6"
+run = "mise run test:version {{vars.nvim_default}}"
 
 [tasks."test:all"]
 run = '''
-for v in 0.10.4 0.11.7 0.12.6 nightly; do
+for v in {{vars.nvim_versions}}; do
   mise run test:version "$v"
 done
 '''
 
 [tasks."test:coverage"]
-run = "mise run test:version --coverage 0.12.6"
+run = "mise run test:version --coverage {{vars.nvim_default}}"
 
 [tasks.ci]
 run = '''

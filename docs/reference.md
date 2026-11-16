@@ -9,6 +9,7 @@ dependency files, and the programmatic API.
 Usage: nvim-bundle <command> [options]
 
 Commands:
+  init [<name>]      Scaffold a project in the current directory
   build [<entry>]    Bundle a source tree into one Lua file
   install [<spec>]   Vendor a dependency, or sync lua/<name>/vendor/
   remove <alias>     Delete a vendored dependency
@@ -34,6 +35,59 @@ nvim-bundle 0.1.0 (Neovim 0.12.6)
 
 The command exits with status 0 on success and status 1 on failure. Errors are
 written to stderr. `--help` prints usage and exits successfully.
+
+### `init`
+
+```text
+Usage: nvim-bundle init [<name>]
+```
+
+`init` scaffolds a project in the current directory. The project name is
+`<name>` when given, and otherwise the directory's basename without a trailing
+`.nvim` or a leading `nvim-`: `foo.nvim/` and `nvim-foo/` both become `foo`.
+
+It writes these files:
+
+| File                           | Contents                                                     |
+| ------------------------------ | ------------------------------------------------------------ |
+| `nvim-bundle.json`             | The name, and `jrop/test.nvim` as the dev dependency `test`. |
+| `lua/<name>.lua`               | A module with one function.                                  |
+| `spec/<name>_spec.lua`         | One case for that function, run by the vendored test.nvim.   |
+| `mise.toml`                    | The tools and tasks described below.                         |
+| `.emmyrc.json`, `.stylua.toml` | The type checker's and the formatter's settings.             |
+| `.styluaignore`, `.gitignore`  | Ignores for `dist/`, and for `lua/<name>/vendor/` in stylua. |
+
+When `git` is installed, `init` also runs `git init`, unless the directory is
+already inside a git work tree: a project in a monorepo stays tracked by that
+repository rather than by a nested one.
+
+`init` then installs the dev dependency, as `nvim-bundle install` would, into
+`lua/<name>/vendor/test.lua`. The test.nvim tag is fixed per nvim-bundle
+release, so every scaffold made by one release runs the same test runner.
+
+`mise.toml` pins Neovim, stylua, emmylua, and the `nvim-bundle` that ran `init`
+(`"github:jrop/nvim-bundle" = "<version>"`). It defines these tasks:
+
+| Task                                    | Runs                                                         |
+| --------------------------------------- | ------------------------------------------------------------ |
+| `fmt`, `fmt:check`                      | stylua                                                       |
+| `lint`                                  | `emmylua_check --warnings-as-errors .`                       |
+| `test`                                  | the specs against `vars.nvim_default`                        |
+| `test:version [--coverage] <version>`   | the specs against one Neovim version, installed first        |
+| `test:all`                              | the specs against every version in `vars.nvim_versions`      |
+| `test:coverage`                         | `test` with line coverage                                    |
+| `ci`                                    | `nvim-bundle install --frozen`, `fmt:check`, `lint`, `test:all` |
+
+The versions the specs run against are set once, in `[vars]`.
+
+`init` fails, and writes nothing, when `nvim-bundle.json` already exists. Any
+other file that already exists is kept as it is, and the output names it, for
+example `kept .gitignore`. When the install fails, the scaffold stays, and
+`nvim-bundle install` finishes it, because the manifest already lists the dev
+dependency.
+
+A checkout has no release version of its own, so `init` from a checkout pins the
+checkout's version and warns that mise may not be able to install it.
 
 ### `build`
 
@@ -486,6 +540,7 @@ final newline is added.
 - `lua/nvim-bundle/git.lua` — the git commands that every dependency goes
   through.
 - `lua/nvim-bundle/files.lua` — file and JSON I/O.
+- `lua/nvim-bundle/scaffold.lua` — the `init` command and its file templates.
 - `lua/nvim-bundle/transform.lua` — the pipeline of source transforms that
   every bundled module passes through.
 - `lua/nvim-bundle/transform/define.lua` — the `--define` pass.

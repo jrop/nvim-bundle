@@ -11,11 +11,11 @@
     },
     "guard": {
       "built_with": "0.1.0",
-      "commit": "9486ce8e6f05dd87bb2e95c39cdd4f12d09b3bd8",
+      "commit": "5f6e30ec890cae037ce19595c6af6f5039a80ee7",
       "entry": "guard",
       "kind": "tag",
-      "ref": "v0.1.1",
-      "sha256": "68ed5065b424e8ab6681e413b6124feb41cbbd9a9b296b18235850e879c1b307",
+      "ref": "v0.2.0",
+      "sha256": "ce2d5d43db429bac7c66f14189e8f26286e5893a87bf86879ae831cb99da1ede",
       "source": "https://github.com/jrop/guard.nvim"
     },
     "test": {

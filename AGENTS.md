@@ -31,8 +31,8 @@ All tasks use `mise`:
 - `mise run test:version [--coverage] <version>` - run the specs against one
   Neovim version, which mise installs first (`nightly` is refreshed when its
   tag moves)
-- `mise run test:all` - run the specs against 0.10.4, 0.11.7, 0.12.6, and
-  nightly
+- `mise run test:all` - run the specs against every version in
+  `vars.nvim_versions` (0.10.4, 0.11.7, 0.12.6, and nightly)
 - `mise run test:coverage` - run the 0.12.6 specs with line coverage of
   `lua/`, vendored files excluded
 - `mise run ci` - `fmt:check` then `lint` then `test:all`
@@ -67,7 +67,8 @@ nvim --clean -l lua/nvim-bundle/vendor/test.lua --filter 'dev dependencies'
   checkout. The lock records no dev flag: the manifest section is the one
   source.
 - **`lua/nvim-bundle/git.lua`** - the git commands every dependency goes
-  through: `latest_tag`, `branch_head`, `ref_kind`, and `checkout`.
+  through: `latest_tag`, `branch_head`, `ref_kind`, and `checkout`, plus
+  `init_repository`, which `init` runs.
 - **`lua/nvim-bundle/dto.lua`** - guard schemas for every value that enters
   from outside: the manifest, the lock, and `build` options. `check` validates
   against one and raises a message naming each problem. The LuaCATS classes
@@ -86,6 +87,10 @@ nvim --clean -l lua/nvim-bundle/vendor/test.lua --filter 'dev dependencies'
   queries as string constants. `PASSES` in `transform.lua` fixes their order:
   `define`, `dead_code`, then `require`: dead-code removal reads the literals
   that define inserts, and a require in a removed branch is never linked.
+- **`lua/nvim-bundle/scaffold.lua`** - `init`: the scaffold's file templates,
+  and the test.nvim tag every scaffold pins (`TEST_REF`). The manifest is
+  written with the dev dependency before anything is cloned, so `install`
+  alone recovers from a failed clone.
 - **`lua/nvim-bundle/files.lua`** - file and JSON I/O for building and
   vendoring. JSON is written with sorted keys so manifests diff cleanly.
 - **`lua/nvim-bundle/version.lua`** - `VERSION`, read from
@@ -97,7 +102,7 @@ nvim --clean -l lua/nvim-bundle/vendor/test.lua --filter 'dev dependencies'
   library behind `dto.lua`. It is also the type generator `generate` runs.
   Treat it as third-party code, like args.
 - **`spec/*_spec.lua`** - black-box tests, one file per area: `cli`,
-  `build` (bundle shape, bin bundles, registries, excludes), one file per
+  `build` (bundle shape, bin bundles, registries, excludes), `init`, one file per
   transform pass (`require`, `define`, `dead_code`), `types`,
   `project_files` (manifest and lock validation), and `deps`. Each case
   writes a fixture tree to a temporary directory, runs the CLI in a child

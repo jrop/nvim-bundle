@@ -157,6 +157,7 @@ M.ParseError = ParseError
 ---| 'one_of'
 ---| 'all_of'
 ---| 'optional'
+---| 'default'
 ---| 'map'
 ---| 'custom'
 
@@ -169,7 +170,7 @@ M.ParseError = ParseError
 ---@field value_guard? Guard For record
 ---@field item_guard? Guard For array
 ---@field guards? Guard[] For tuple, one_of, all_of
----@field inner? Guard For optional, map
+---@field inner? Guard For optional, default, map
 ---@field opts? table Additional options
 
 ---@class Guard
@@ -206,23 +207,40 @@ local function prepend_path(segment, problems)
   return result
 end
 
---- Parse a value, throwing ParseError on failure
+--- A failed result as a ParseError with at least one problem. A custom guard
+--- may fail without listing any, and a reader should never see an empty list.
+---@param result guard.ParseResult<any> a failed one
+---@return guard.ParseError
+local function failure(result)
+  -- emmylua does not narrow the result union on `ok`.
+  --- @cast result guard.ParseError
+  return ParseError.new(
+    result.actual,
+    result.problems or problem('Validation failed', result.actual)
+  )
+end
+
+--- Parse a value, raising the formatted error on failure. Invalid input is the
+--- caller's bug here, so the message names the caller's line.
 ---@param x unknown
 ---@return any
 function Guard:parse(x)
   local result = self._parse(x)
-  if not result.ok then
-    local err =
-      ParseError.new(result.actual, result.problems or problem('Validation failed', result.actual))
-    error(err:format(false), 2)
-  end
+  if not result.ok then error(failure(result):format(false), 2) end
   return result.value
 end
 
---- Parse a value, returning a ParseResult
+--- Parse a value that may be invalid, such as a file or a user's input, and
+--- return the failure for the caller to report. A valid value can be nil, so a
+--- caller tests `err`, not `value`.
 ---@param x unknown
----@return guard.ParseResult<any>
-function Guard:try_parse(x) return self._parse(x) end
+---@return any value nil on failure
+---@return guard.ParseError? err nil on success
+function Guard:try_parse(x)
+  local result = self._parse(x)
+  if not result.ok then return nil, failure(result) end
+  return result.value, nil
+end
 
 --- Check if a value matches this guard (no coercion)
 ---@param x unknown
@@ -246,6 +264,21 @@ function Guard:optional()
   local inner = self._parse
   return Guard.new({ type = 'optional', inner = self }, function(x)
     if x == nil then return ok(nil) end
+    return inner(x)
+  end)
+end
+
+--- Decode nil as `make()`, and parse any other value with this guard. Unlike
+--- `optional`, the generated type is the inner type, not nil-able, so readers
+--- need not handle a nil that parsing already ruled out. `make` returns the
+--- parsed value itself, and it runs on every parse, so a table default is never
+--- shared between results.
+---@param make fun(): any
+---@return Guard
+function Guard:default(make)
+  local inner = self._parse
+  return Guard.new({ type = 'default', inner = self }, function(x)
+    if x == nil then return ok(make()) end
     return inner(x)
   end)
 end
@@ -576,6 +609,43 @@ end
 
 -- Combinators --
 
+--- The names `type()` can return, so a misspelled `by_type` key fails when the
+--- guard is built rather than silently never matching.
+local LUA_TYPES = {
+  ['nil'] = true,
+  boolean = true,
+  number = true,
+  string = true,
+  table = true,
+  ['function'] = true,
+  userdata = true,
+  thread = true,
+}
+
+--- Choose one guard by the input's Lua type, so a failure reports only the
+--- problems of the shape the input was written in. `one_of` instead reports
+--- every alternative: an object with one bad field is also told that it is not
+--- a string. The schema is still a `one_of`, so the generated type is the same
+--- union.
+---@param alternatives table<type, Guard>
+---@return Guard
+function M.by_type(alternatives)
+  local kinds = vim.tbl_keys(alternatives)
+  -- Sorted, so the generated union reads the same on every run.
+  table.sort(kinds)
+  for _, kind in ipairs(kinds) do
+    if not LUA_TYPES[kind] then error('by_type: not a Lua type: ' .. kind, 2) end
+  end
+  local guards = vim.tbl_map(function(kind) return alternatives[kind] end, kinds)
+  local expected = 'Expected ' .. table.concat(kinds, ' or ')
+
+  return Guard.new({ type = 'one_of', guards = guards }, function(x)
+    local chosen = alternatives[type(x)]
+    if not chosen then return err(x, problem(expected, x)) end
+    return chosen._parse(x)
+  end)
+end
+
 --- Match if any guard matches
 ---@param ... Guard
 ---@return Guard
@@ -851,8 +921,8 @@ function Guard:infer_type(name, visited, named)
     return 'any', nil
   end
 
-  -- Map (preserve inner type)
-  if t == 'map' then
+  -- Default and map both produce the inner type.
+  if t == 'default' or t == 'map' then
     local inner = schema.inner
     if inner then return inner:infer_type(name, visited, named) end
     return 'any', nil
