@@ -12,14 +12,14 @@ options, see the [reference](reference.md). For background, see the
 
 ```sh
 mise use -g \
-  'github:jrop/nvim-bundle[asset_pattern=nvim-bundle,format=raw,bin=nvim-bundle]@0.1.0'
+  'github:jrop/nvim-bundle@0.5.1'
 ```
 
 Or pin it in `mise.toml`:
 
 ```toml
 [tools."github:jrop/nvim-bundle"]
-version = "0.1.0"
+version = "0.5.1"
 asset_pattern = "nvim-bundle"
 format = "raw"
 bin = "nvim-bundle"
@@ -32,7 +32,7 @@ mise verifies the asset and puts `nvim-bundle` on `PATH`.
 Download the executable and its checksum, verify the checksum, and install it:
 
 ```sh
-version=v0.1.0
+version=v0.5.1
 base="https://github.com/jrop/nvim-bundle/releases/download/$version"
 curl -fsSLo nvim-bundle "$base/nvim-bundle"
 curl -fsSLo nvim-bundle.sha256 "$base/nvim-bundle.sha256"

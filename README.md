@@ -19,15 +19,43 @@ Official builds include the Lua parser. A custom build with
 
 ## Install
 
-With mise:
+Install nvim-bundle with [mise](https://mise.jdx.dev), which downloads the
+release, verifies its checksum, and puts `nvim-bundle` on `PATH`:
 
 ```sh
 mise use -g \
-  'github:jrop/nvim-bundle[asset_pattern=nvim-bundle,format=raw,bin=nvim-bundle]@0.1.0'
+  'github:jrop/nvim-bundle@0.5.1'
 ```
 
-For release downloads, checksum verification, checkout runs, and vendored
-installs, see [Install nvim-bundle](docs/how-to.md#install-nvim-bundle).
+Drop `-g` to pin the version in a project's `mise.toml` instead, so everyone
+who works on that project runs the same nvim-bundle.
+
+Without mise, download the executable from a release. It is one file, and it
+needs only Neovim to run:
+
+```sh
+version=v0.5.1
+base="https://github.com/jrop/nvim-bundle/releases/download/$version"
+curl -fsSLo nvim-bundle "$base/nvim-bundle"
+curl -fsSLo nvim-bundle.sha256 "$base/nvim-bundle.sha256"
+sha256sum -c nvim-bundle.sha256   # or: shasum -a 256 -c nvim-bundle.sha256
+install -m 755 nvim-bundle ~/.local/bin/nvim-bundle
+```
+
+To run from a checkout or vendor the bundler itself, see
+[Install nvim-bundle](docs/how-to.md#install-nvim-bundle).
+
+Once it is installed, one command vendors a library into your plugin. An
+example is [guard.nvim](https://github.com/jrop/guard.nvim):
+
+```sh
+nvim-bundle install jrop/guard.nvim guard
+```
+
+This writes `lua/<your-plugin>/vendor/guard.lua`, so your code loads it with
+`require '<your-plugin>.vendor.guard'`. See
+[Vendor a dependency](docs/how-to.md#vendor-a-dependency) for pinning and other
+options.
 
 ## Tutorial: build your first bundle
 
