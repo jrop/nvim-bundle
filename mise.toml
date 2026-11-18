@@ -83,7 +83,7 @@ tool="aqua:neovim/neovim@$usage_version"
 mise install "$tool"
 # The nightly tag moves, so refresh it when its checksum changed.
 [ "$usage_version" = nightly ] && { mise upgrade "$tool" >/dev/null 2>&1 || true; }
-mise exec "$tool" -- nvim --clean -l lua/nvim-bundle/vendor/test.lua ${usage_coverage:+--coverage}
+mise exec "$tool" -- nvim --clean -l lua/nvim-bundle/vendor/test.lua ${usage_coverage:+--coverage} --isolate=case
 '''
 
 [tasks.test]

@@ -20,11 +20,11 @@
     },
     "test": {
       "built_with": "0.1.0",
-      "commit": "4cbcb69e00e62ae9072c8df546bf66d293fc24c6",
+      "commit": "1b7224725bb07a582e4f716c294f80d37f5fbb51",
       "entry": "test",
       "kind": "tag",
-      "ref": "v0.3.0",
-      "sha256": "a0fa2720dab6ed22d8c79f94d783100197fdd285402ad3ca39248de0975abf1f",
+      "ref": "v0.4.1",
+      "sha256": "fb08fc17a9ecbca7a99e8056baca7d405326b78b327ce85ca217793e6d920e15",
       "source": "https://github.com/jrop/test.nvim"
     }
   },
