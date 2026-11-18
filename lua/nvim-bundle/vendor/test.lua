@@ -1460,7 +1460,7 @@ function M.spawner(opts)
       while vim.tbl_count(running) < opts.jobs and #queue > 0 do
         running[start(table.remove(queue, 1), opts)] = true
       end
-      vim.wait(math.huge, function()
+      vim.wait(2 ^ 31 - 1, function()
         for job in pairs(running) do
           if job.exit then return true end
         end
