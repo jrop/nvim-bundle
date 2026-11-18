@@ -14,8 +14,8 @@ local function empty() return {} end
 
 --- The fields that say how a dependency is built. They appear in the manifest,
 --- in the lock, and in `build` options, so each schema copies them in.
---- @param fields table<string, Guard>
---- @return table<string, Guard>
+--- @param fields table<string, guard.Guard<any>>
+--- @return table<string, guard.Guard<any>>
 local function with_build_settings(fields)
   return vim.tbl_extend('error', fields, {
     entry = guard.string():optional(),
@@ -138,7 +138,7 @@ M.BuildOptions = guard.object(
 --- Validate `value` against `schema`, or fail with every problem guard found.
 --- These values come from the user, so the message names the file, not the
 --- line of nvim-bundle that `parse` would blame.
---- @param schema Guard
+--- @param schema guard.Guard<any>
 --- @param value unknown
 --- @param what string names the value in the error, such as a file name
 --- @return any

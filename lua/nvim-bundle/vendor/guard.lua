@@ -165,15 +165,17 @@ M.ParseError = ParseError
 ---@field type SchemaType
 ---@field values? any[] For literal
 ---@field pattern? string For pattern
----@field fields? table<string, Guard> For object
----@field key_guard? Guard For record
----@field value_guard? Guard For record
----@field item_guard? Guard For array
----@field guards? Guard[] For tuple, one_of, all_of
----@field inner? Guard For optional, default, map
+---@field fields? table<string, guard.Guard<any>> For object
+---@field key_guard? guard.Guard<any> For record
+---@field value_guard? guard.Guard<any> For record
+---@field item_guard? guard.Guard<any> For array
+---@field guards? guard.Guard<any>[] For tuple, one_of, all_of
+---@field inner? guard.Guard<any> For optional, default, map
 ---@field opts? table Additional options
 
----@class Guard
+--- A guard for values of type `T`. Most combinators return `guard.Guard<any>`,
+--- because the generator supplies `T` for every guard a schema module exports.
+---@class guard.Guard<T>
 ---@field _parse fun(x: unknown): guard.ParseResult<any>
 ---@field _schema Schema? Schema metadata for type generation
 local Guard = {}
@@ -182,7 +184,7 @@ Guard.__index = Guard
 --- Create a new Guard
 ---@param schema Schema? Optional schema metadata
 ---@param parse fun(x: unknown): guard.ParseResult<any> Returns parse result
----@return Guard
+---@return guard.Guard<any>
 function Guard.new(schema, parse) return setmetatable({ _parse = parse, _schema = schema }, Guard) end
 
 --- Helper to create a single problem
@@ -223,7 +225,7 @@ end
 --- Parse a value, raising the formatted error on failure. Invalid input is the
 --- caller's bug here, so the message names the caller's line.
 ---@param x unknown
----@return any
+---@return T
 function Guard:parse(x)
   local result = self._parse(x)
   if not result.ok then error(failure(result):format(false), 2) end
@@ -234,7 +236,7 @@ end
 --- return the failure for the caller to report. A valid value can be nil, so a
 --- caller tests `err`, not `value`.
 ---@param x unknown
----@return any value nil on failure
+---@return T? value nil on failure
 ---@return guard.ParseError? err nil on success
 function Guard:try_parse(x)
   local result = self._parse(x)
@@ -259,7 +261,7 @@ function Guard:matches(x)
 end
 
 --- Make this guard optional (allows nil)
----@return Guard
+---@return guard.Guard<T?>
 function Guard:optional()
   local inner = self._parse
   return Guard.new({ type = 'optional', inner = self }, function(x)
@@ -273,8 +275,8 @@ end
 --- need not handle a nil that parsing already ruled out. `make` returns the
 --- parsed value itself, and it runs on every parse, so a table default is never
 --- shared between results.
----@param make fun(): any
----@return Guard
+---@param make fun(): T
+---@return guard.Guard<T>
 function Guard:default(make)
   local inner = self._parse
   return Guard.new({ type = 'default', inner = self }, function(x)
@@ -285,7 +287,7 @@ end
 
 --- Transform to array guard
 ---@param opts? { from_nil: boolean }
----@return Guard
+---@return guard.Guard<T[]>
 function Guard:array(opts)
   local inner = self._parse
   return Guard.new({ type = 'array', item_guard = self, opts = opts }, function(x)
@@ -313,7 +315,7 @@ function Guard:array(opts)
 end
 
 --- Transform to non-empty array guard
----@return Guard
+---@return guard.Guard<T[]>
 function Guard:array_nonempty()
   local arr_guard = self:array()
   local g = arr_guard:map(function(x)
@@ -327,7 +329,7 @@ end
 
 --- Map/transform the parsed value
 ---@param fn fun(x: any): guard.ParseResult<any>
----@return Guard
+---@return guard.Guard<any>
 function Guard:map(fn)
   local inner = self._parse
   return Guard.new({ type = 'map', inner = self }, function(x)
@@ -340,7 +342,7 @@ end
 --- Add an invariant (predicate that must be true)
 ---@param pred fun(x: any): boolean
 ---@param msg string
----@return Guard
+---@return guard.Guard<T>
 function Guard:invariant(pred, msg)
   local g = self:map(function(x)
     if not pred(x) then return err(x, problem(msg, x)) end
@@ -352,25 +354,25 @@ function Guard:invariant(pred, msg)
 end
 
 --- Combine with another guard (must match both)
----@param other Guard
----@return Guard
+---@param other guard.Guard<any>
+---@return guard.Guard<any>
 function Guard:and_(other) return M.all_of(self, other) end
 
 --- Alternative guard (must match either)
----@param other Guard
----@return Guard
+---@param other guard.Guard<any>
+---@return guard.Guard<any>
 function Guard:or_(other) return M.one_of(self, other) end
 
 -- Primitives --
 
 --- Match any value
----@return Guard
+---@return guard.Guard<any>
 function M.any()
   return Guard.new({ type = 'any' }, function(x) return ok(x) end)
 end
 
 --- Match nil
----@return Guard
+---@return guard.Guard<nil>
 function M.nil_()
   return Guard.new({ type = 'nil' }, function(x)
     if x == nil then return ok(nil) end
@@ -379,7 +381,7 @@ function M.nil_()
 end
 
 --- Match string
----@return Guard
+---@return guard.Guard<string>
 function M.string()
   return Guard.new({ type = 'string' }, function(x)
     if type(x) == 'string' then return ok(x) end
@@ -388,7 +390,7 @@ function M.string()
 end
 
 --- Match number
----@return Guard
+---@return guard.Guard<number>
 function M.number()
   return Guard.new({ type = 'number' }, function(x)
     if type(x) == 'number' then return ok(x) end
@@ -397,7 +399,7 @@ function M.number()
 end
 
 --- Match integer
----@return Guard
+---@return guard.Guard<integer>
 function M.integer()
   return Guard.new({ type = 'integer' }, function(x)
     if type(x) == 'number' and x == math.floor(x) then return ok(x) end
@@ -406,7 +408,7 @@ function M.integer()
 end
 
 --- Match boolean
----@return Guard
+---@return guard.Guard<boolean>
 function M.boolean()
   return Guard.new({ type = 'boolean' }, function(x)
     if type(x) == 'boolean' then return ok(x) end
@@ -415,7 +417,7 @@ function M.boolean()
 end
 
 --- Match table (any table)
----@return Guard
+---@return guard.Guard<table>
 function M.table()
   return Guard.new({ type = 'table' }, function(x)
     if type(x) == 'table' then return ok(x) end
@@ -424,7 +426,7 @@ function M.table()
 end
 
 --- Match function
----@return Guard
+---@return guard.Guard<function>
 function M.func()
   return Guard.new({ type = 'function' }, function(x)
     if type(x) == 'function' then return ok(x) end
@@ -433,7 +435,7 @@ function M.func()
 end
 
 --- Match userdata
----@return Guard
+---@return guard.Guard<userdata>
 function M.userdata()
   return Guard.new({ type = 'userdata' }, function(x)
     if type(x) == 'userdata' then return ok(x) end
@@ -442,7 +444,7 @@ function M.userdata()
 end
 
 --- Match thread (coroutine)
----@return Guard
+---@return guard.Guard<thread>
 function M.thread()
   return Guard.new({ type = 'thread' }, function(x)
     if type(x) == 'thread' then return ok(x) end
@@ -454,7 +456,7 @@ end
 
 --- Match exact literal value(s)
 ---@param ... any Values to match
----@return Guard
+---@return guard.Guard<any>
 function M.literal(...)
   local values = { ... }
   local set = {}
@@ -476,7 +478,7 @@ end
 
 --- Match string against pattern
 ---@param pat string Lua pattern
----@return Guard
+---@return guard.Guard<string>
 function M.pattern(pat)
   return Guard.new({ type = 'pattern', pattern = pat }, function(x)
     if type(x) ~= 'string' then return err(x, problem('Expected string', x)) end
@@ -488,9 +490,9 @@ end
 -- Composite types --
 
 --- Match object with specific shape
----@param spec table<string, Guard>
+---@param spec table<string, guard.Guard<any>>
 ---@param opts? { strict: boolean }
----@return Guard
+---@return guard.Guard<any>
 function M.object(spec, opts)
   local options = opts or {}
   return Guard.new({ type = 'object', fields = spec, opts = options }, function(x)
@@ -527,9 +529,9 @@ function M.object(spec, opts)
 end
 
 --- Match record (dictionary with uniform key/value types)
----@param key_guard Guard
----@param value_guard Guard
----@return Guard
+---@param key_guard guard.Guard<any>
+---@param value_guard guard.Guard<any>
+---@return guard.Guard<any>
 function M.record(key_guard, value_guard)
   return Guard.new(
     { type = 'record', key_guard = key_guard, value_guard = value_guard },
@@ -571,13 +573,13 @@ function M.record(key_guard, value_guard)
 end
 
 --- Match array with specific item type
----@param guard Guard
----@return Guard
+---@param guard guard.Guard<any>
+---@return guard.Guard<any>
 function M.array(guard) return guard:array() end
 
 --- Match tuple with specific types at each position
----@param ... Guard Guards for each position
----@return Guard
+---@param ... guard.Guard<any> Guards for each position
+---@return guard.Guard<any>
 function M.tuple(...)
   local guards = { ... }
   local n = #guards
@@ -627,8 +629,8 @@ local LUA_TYPES = {
 --- every alternative: an object with one bad field is also told that it is not
 --- a string. The schema is still a `one_of`, so the generated type is the same
 --- union.
----@param alternatives table<type, Guard>
----@return Guard
+---@param alternatives table<type, guard.Guard<any>>
+---@return guard.Guard<any>
 function M.by_type(alternatives)
   local kinds = vim.tbl_keys(alternatives)
   -- Sorted, so the generated union reads the same on every run.
@@ -646,9 +648,53 @@ function M.by_type(alternatives)
   end)
 end
 
+--- Choose one variant by the input's `tag` field, so a failure reports only that
+--- variant's problems, where `one_of` reports every alternative. The generated
+--- union names each variant after its tag, as `Shape.circle|Shape.square`.
+---@param tag string
+---@param variants table<string, table<string, guard.Guard<any>>> each variant's fields, by tag
+---@return guard.Guard<any>
+function M.tagged(tag, variants)
+  local names = vim.tbl_keys(variants)
+  -- Checked first, because sorting mixed key types raises an opaque error.
+  for _, name in ipairs(names) do
+    if type(name) ~= 'string' then error('tagged: tag values must be strings', 2) end
+  end
+  if #names == 0 then error('tagged: needs at least one variant', 2) end
+  -- Sorted, so the generated union reads the same on every run.
+  table.sort(names)
+
+  local by_tag, guards = {}, {}
+  for i, name in ipairs(names) do
+    local fields = variants[name]
+    if type(fields) ~= 'table' or getmetatable(fields) == Guard then
+      error(('tagged: variant %s must be a table of fields'):format(name), 2)
+    end
+    if fields[tag] ~= nil then
+      error(('tagged: variant %s declares its own `%s`; the key is its tag'):format(name, tag), 2)
+    end
+    guards[i] = M.object(vim.tbl_extend('force', fields, { [tag] = M.literal(name) }))
+    by_tag[name] = guards[i]
+  end
+  -- Reports an unknown tag the way any other literal mismatch reads.
+  local tag_guard = M.literal(unpack(names))
+
+  return Guard.new(
+    { type = 'one_of', guards = guards, opts = { tag = tag, names = names } },
+    function(x)
+      if type(x) ~= 'table' then return err(x, problem('Expected table', x)) end
+      local chosen = by_tag[x[tag]]
+      if chosen then return chosen._parse(x) end
+      local res = tag_guard._parse(x[tag])
+      --- @cast res guard.ParseError
+      return err(x, prepend_path('.' .. tag, res.problems))
+    end
+  )
+end
+
 --- Match if any guard matches
----@param ... Guard
----@return Guard
+---@param ... guard.Guard<any>
+---@return guard.Guard<any>
 function M.one_of(...)
   local guards = { ... }
   return Guard.new({ type = 'one_of', guards = guards }, function(x)
@@ -671,8 +717,8 @@ function M.one_of(...)
 end
 
 --- Match if all guards match (intersection)
----@param ... Guard
----@return Guard
+---@param ... guard.Guard<any>
+---@return guard.Guard<any>
 function M.all_of(...)
   local guards = { ... }
   return Guard.new({ type = 'all_of', guards = guards }, function(x)
@@ -689,7 +735,7 @@ end
 -- Converters ("into" functions) --
 
 --- Coerce to number
----@return Guard
+---@return guard.Guard<number>
 function M.into_number()
   return Guard.new({ type = 'number' }, function(x)
     if type(x) == 'number' then return ok(x) end
@@ -703,7 +749,7 @@ function M.into_number()
 end
 
 --- Coerce to string
----@return Guard
+---@return guard.Guard<string>
 function M.into_string()
   return Guard.new({ type = 'string' }, function(x)
     if type(x) == 'string' then return ok(x) end
@@ -713,7 +759,7 @@ function M.into_string()
 end
 
 --- Coerce to boolean
----@return Guard
+---@return guard.Guard<boolean>
 function M.into_boolean()
   return Guard.new({ type = 'boolean' }, function(x)
     if type(x) == 'boolean' then return ok(x) end
@@ -729,8 +775,9 @@ function M.into_boolean()
 end
 
 --- Parse JSON string
----@param guard Guard Guard to apply to parsed value
----@return Guard
+---@generic T
+---@param guard guard.Guard<T> Guard to apply to parsed value
+---@return guard.Guard<T>
 function M.from_json(guard)
   return Guard.new(guard._schema, function(x)
     if type(x) ~= 'string' then return err(x, problem('Expected JSON string', x)) end
@@ -747,7 +794,7 @@ function M.from_json(guard)
 end
 
 --- Serialize to JSON
----@return Guard
+---@return guard.Guard<string>
 function M.into_json()
   return Guard.new({ type = 'string' }, function(x)
     local ok_encode, json = pcall(vim.json.encode, x)
@@ -761,7 +808,7 @@ end
 --- Match instance of class (checks metatable)
 ---@param mt table The metatable to check against
 ---@param name string? Optional name for error messages
----@return Guard
+---@return guard.Guard<any>
 function M.instance_of(mt, name)
   local type_name = name or 'specific metatable'
   return Guard.new({ type = 'custom', opts = { name = type_name } }, function(x)
@@ -776,10 +823,31 @@ end
 
 -- LuaCATS type generation from schema metadata
 
+--- A union's member types, joined as `A|B`. A tagged member is named after its
+--- tag (`Shape.circle`), and any other member after its position (`Shape_alt1`).
+---@param guard guard.Guard<any> a one_of
+---@param name string?
+---@param visited table<guard.Guard<any>, string>
+---@param named table<guard.Guard<any>, string>?
+---@return string type_str
+---@return string[] class_defs
+local function union_members(guard, name, visited, named)
+  local schema = guard._schema --[[@as Schema]]
+  local tags = schema.opts and schema.opts.names
+  local parts, class_defs = {}, {}
+  for i, member in ipairs(schema.guards or {}) do
+    local member_name = name and (tags and (name .. '.' .. tags[i]) or (name .. '_alt' .. i))
+    local part_type, part_defs = member:infer_type(member_name, visited, named)
+    if part_defs then vim.list_extend(class_defs, part_defs) end
+    parts[i] = part_type
+  end
+  return table.concat(parts, '|'), class_defs
+end
+
 --- Infer the LuaCATS type string for this guard
 ---@param name string? Name for complex types (classes)
----@param visited table<Guard, string>? Track visited guards to avoid cycles
----@param named table<Guard, string>? Guards registered under a qualified name
+---@param visited table<guard.Guard<any>, string>? Track visited guards to avoid cycles
+---@param named table<guard.Guard<any>, string>? Guards registered under a qualified name
 ---@return string type_str The LuaCATS type string
 ---@return string[]? class_defs Additional class definitions needed
 function Guard:infer_type(name, visited, named)
@@ -794,8 +862,14 @@ function Guard:infer_type(name, visited, named)
   -- A schema registered in the namespace keeps that name wherever it is
   -- referenced. Regenerating it under the positional name would produce a
   -- structurally identical but distinct type, which no call site can satisfy.
+  -- A union is the exception: its name is an alias, which EmmyLua does not narrow
+  -- through, so a reference spells out the members. Marking the union visited
+  -- stops a member that refers back to it at the alias.
   local registered = named and named[self]
-  if registered and registered ~= name then return registered, nil end
+  if registered and registered ~= name then
+    if schema.type ~= 'one_of' then return registered, nil end
+    return (union_members(self, registered, { [self] = registered }, named)), nil
+  end
 
   local t = schema.type
   local class_defs = {}
@@ -847,6 +921,8 @@ function Guard:infer_type(name, visited, named)
     if item then
       local item_type, item_defs = item:infer_type(name and (name .. '_item'), visited, named)
       if item_defs then vim.list_extend(class_defs, item_defs) end
+      -- `A|B[]` reads as `A|(B[])`, so a union item needs parentheses.
+      if item_type:find('|', 1, true) then item_type = '(' .. item_type .. ')' end
       return item_type .. '[]', #class_defs > 0 and class_defs or nil
     end
     return 'any[]', nil
@@ -904,13 +980,8 @@ function Guard:infer_type(name, visited, named)
 
   -- Union (one_of)
   if t == 'one_of' then
-    local parts = {}
-    for i, guard in ipairs(schema.guards or {}) do
-      local part_type, part_defs = guard:infer_type(name and (name .. '_alt' .. i), visited, named)
-      if part_defs then vim.list_extend(class_defs, part_defs) end
-      table.insert(parts, part_type)
-    end
-    return table.concat(parts, '|'), #class_defs > 0 and class_defs or nil
+    local type_str, defs = union_members(self, name, visited, named)
+    return type_str, #defs > 0 and defs or nil
   end
 
   -- Intersection (all_of)
@@ -942,14 +1013,12 @@ end
 ---@return string annotations The full LuaCATS annotation block
 function Guard:to_luacats(name, named)
   local type_str, class_defs = self:infer_type(name, {}, named)
-
-  if not class_defs or #class_defs == 0 then
-    -- Simple type, just alias
-    return string.format('---@alias %s %s', name, type_str)
-  end
-
-  -- Return all class definitions
-  return table.concat(class_defs, '\n\n')
+  local alias = string.format('---@alias %s %s', name, type_str)
+  if not class_defs then return alias end
+  -- An object is its own class; anything else needs the alias to be nameable.
+  local classes = table.concat(class_defs, '\n\n')
+  if type_str == name then return classes end
+  return classes .. '\n\n' .. alias
 end
 
 -- Export Guard class for extension
@@ -1056,6 +1125,64 @@ local function process_table(tbl, pfx, lines, visited, named)
   end
 end
 
+--- A key as a field name, bracketed unless it is an identifier, as `['my-key']`.
+--- @param key any
+--- @return string
+local function field_key(key)
+  if type(key) ~= 'string' then return '[' .. tostring(key) .. ']' end
+  if key:match '^[%a_][%w_]*$' then return key end
+  return ("['%s']"):format((key:gsub("['\\]", '\\%0')))
+end
+
+--- The keys of `tbl`, sorted so the module type reads the same on every run.
+--- @param tbl table
+--- @return any[]
+local function sorted_keys(tbl)
+  local keys = vim.tbl_keys(tbl)
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  return keys
+end
+
+--- A namespace value's type as `require` gives it. A value that is not a guard is
+--- typed `any` rather than dropped, so a misspelled schema name is still an error.
+--- @param value any
+--- @param named table<table, string>
+--- @param seen table<table, boolean>
+--- @return string
+local function export_type(value, named, seen)
+  if type(value) ~= 'table' then return 'any' end
+  if getmetatable(value) == Guard then
+    return 'guard.Guard<' .. (value:infer_type(nil, {}, named)) .. '>'
+  end
+  if seen[value] then return 'table' end
+  seen[value] = true
+  local fields = {}
+  for _, key in ipairs(sorted_keys(value)) do
+    fields[#fields + 1] = field_key(key) .. ': ' .. export_type(value[key], named, seen)
+  end
+  return '{ ' .. table.concat(fields, ', ') .. ' }'
+end
+
+--- The schema module's class. The `---@meta` line names the module, so every
+--- `require` of it gets this class, and `parse` returns each generated type.
+--- @param module table
+--- @param module_path string
+--- @param named table<table, string>
+--- @return string[]
+local function module_lines(module, module_path, named)
+  local lines = {
+    '-- The type `require ' .. ("'%s'"):format(module_path) .. '` gives.',
+    '---@class ' .. module_path,
+  }
+  local seen = { [module] = true }
+  for _, key in ipairs(sorted_keys(module)) do
+    local ty = export_type(module[key], named, seen)
+    lines[#lines + 1] = '---@field ' .. field_key(key) .. ' ' .. ty
+  end
+  vim.list_extend(lines, { '', '---@type ' .. module_path, 'local M', 'return M' })
+  return lines
+end
+
 --- @param src string
 --- @param modules string[]
 --- @return boolean ok
@@ -1088,7 +1215,7 @@ local function process_file(src, modules)
   command[#command + 1] = src
 
   local lines = {
-    '---@meta',
+    '---@meta ' .. module_path,
     '-- AUTO-GENERATED FILE - DO NOT EDIT',
     '-- Generated from: ' .. src,
     '-- Module prefix: ' .. module_path,
@@ -1102,17 +1229,20 @@ local function process_file(src, modules)
   collect_names(module, module_path .. '.', named, {})
   process_table(module, module_path .. '.', lines, {}, named)
 
+  -- Counted before the module class, which types the file rather than a schema.
+  local type_count = 0
+  for _, line in ipairs(lines) do
+    if line:match '^%-%-%-@class' or line:match '^%-%-%-@alias' then type_count = type_count + 1 end
+  end
+  table.insert(lines, '')
+  vim.list_extend(lines, module_lines(module, module_path, named))
+
   local f, open_err = io.open(output_file, 'w')
   if not f then fail(('cannot write %s: %s'):format(output_file, tostring(open_err))) end
   --- @cast f file
   f:write(table.concat(lines, '\n'))
   f:write '\n'
   f:close()
-
-  local type_count = 0
-  for _, line in ipairs(lines) do
-    if line:match '^%-%-%-@class' or line:match '^%-%-%-@alias' then type_count = type_count + 1 end
-  end
 
   io.stdout:write(('Generated: %s (%d types)\n'):format(output_file, type_count))
   return true
