@@ -116,6 +116,39 @@ mise run test:all
 '''
 ]=],
 
+  -- CI runs the same `ci` task a contributor runs locally, so the workflow
+  -- never drifts from mise.toml. mise installs the `github:` tools through the
+  -- GitHub API, which rate-limits anonymous runners, so the job passes its
+  -- token.
+  ['.github/workflows/ci.yaml'] = [=[
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: ci
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ["*"]
+    tags: ["*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  MISE_EXPERIMENTAL: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: mise run ci
+]=],
+
   ['.gitignore'] = [=[
 dist/
 ]=],

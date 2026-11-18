@@ -56,6 +56,7 @@ It writes these files:
 | `mise.toml`                    | The tools and tasks described below.                         |
 | `.emmyrc.json`, `.stylua.toml` | The type checker's and the formatter's settings.             |
 | `.styluaignore`, `.gitignore`  | Ignores for `dist/`, and for `lua/<name>/vendor/` in stylua. |
+| `.github/workflows/ci.yaml`    | A GitHub Actions job that installs the tools and runs `ci`.  |
 
 When `git` is installed, `init` also runs `git init`, unless the directory is
 already inside a git work tree: a project in a monorepo stays tracked by that

@@ -191,6 +191,15 @@ describe('init', function()
     assert.contains(proc.stdout or '', '1 passed, 0 failed')
   end)
 
+  it('writes a GitHub workflow that runs the ci task', function()
+    local dir = project_dir 'foo.nvim'
+    assert.equal(init(dir).code, 0)
+
+    local workflow = slurp(dir .. '/.github/workflows/ci.yaml')
+    assert.contains(workflow, 'jdx/mise-action')
+    assert.contains(workflow, 'run: mise run ci')
+  end)
+
   it('writes a mise.toml that pins this nvim-bundle and runs the test grid', function()
     local dir = project_dir 'foo.nvim'
     assert.equal(init(dir).code, 0)
